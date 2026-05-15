@@ -1,0 +1,62 @@
+@startuml BloqueoIntentos
+' ====================================================================
+' Diagrama de secuencia - Bloqueo por 3 intentos fallidos
+' PIN incorrecto x3 -> SISTEMA_BLOQUEADO -> BLOQUEO 4s -> reposo
+' ====================================================================
+
+skinparam backgroundColor white
+skinparam defaultFontName SansSerif
+skinparam sequenceMessageAlign center
+
+actor "Usuario" as USR #FFFACD
+participant "Keypad\n4x4" as TEC #D4E6F1
+participant "Sistema\n(loop)" as SYS #FFCCCC
+participant "EEPROM" as EEP #D4E6F1
+participant "StateMachine" as FSM #B3D9FF
+participant "LED Rojo\nD10" as LEDR #FADBD8
+
+== BOTON - intentos fallidos ==
+
+loop 3 intentos fallidos
+  USR -> TEC: Ingresa PIN incorrecto
+  TEC -> SYS: getKey() = digitos + '#'
+  SYS -> EEP: leerPinMaestro()
+  EEP --> SYS: "1234"
+  SYS -> SYS: validarPIN() = false
+  SYS -> SYS: intentosFallidos++
+  note right: PIN incorrecto.\nIntento #{x}
+  SYS -> SYS: bufferPIN = "", reinicia input
+end
+
+SYS -> SYS: intentosFallidos >= 3
+SYS -> FSM: trigger = TRIG_LOCKOUT
+
+FSM -> SYS: Transicion a E_SISTEMA_BLOQUEADO
+SYS -> SYS: alEntrarSistemaBloqueado()
+SYS -> SYS: contadorBloqueos++
+note right: "SISTEMA BLOQUEADO\n3 intentos fallidos"
+
+FSM -> SYS: Update() - transicion inmediata
+FSM -> SYS: Transicion a E_BLOQUEO
+
+== BLOQUEO - LED blink 4 segundos ==
+SYS -> SYS: alEntrarBloqueo()
+note right: tiempoEstado = millis() + 4000ms
+
+loop ~7 ciclos (100ms on / 500ms off)
+  SYS -> LEDR: HIGH (100ms)
+  note right: 100ms
+  SYS -> LEDR: LOW (500ms)
+  note right: 500ms
+end
+
+FSM -> SYS: Update() - 4s cumplidos
+SYS -> SYS: alSalirBloqueo()
+SYS -> LEDR: LOW
+note right: LED apagado
+
+FSM -> SYS: Transicion a E_INICIO
+SYS -> SYS: alEntrarInicio()
+note right: intentosFallidos = 0\nSistema restablecido
+
+@enduml

@@ -1,0 +1,89 @@
+@startuml IngresoExitoso
+' ====================================================================
+' Diagrama de secuencia - Ingreso exitoso con PIN valido
+' Happy path: PIN correcto -> desbloqueo 2s -> monitoreo -> reposo
+' ====================================================================
+
+skinparam backgroundColor white
+skinparam defaultFontName SansSerif
+skinparam sequenceMessageAlign center
+
+actor "Usuario" as USR #FFFACD
+participant "Keypad\n4x4" as TEC #D4E6F1
+participant "Sistema\n(loop)" as SYS #FFCCCC
+participant "EEPROM" as EEP #D4E6F1
+participant "StateMachine" as FSM #B3D9FF
+participant "Relay\nD12" as REL #FADBD8
+participant "LED\nD13" as LED #FADBD8
+participant "LED Rojo\nD10" as LEDR #FADBD8
+participant "Buzzer\nD11" as BUZ #FADBD8
+participant "NTC\nA1" as NTC #D5F5E3
+participant "LDR\nA2" as LDR #D5F5E3
+
+== INICIO - esperando tecla ==
+SYS -> FSM: Update()
+note right: Estado E_INICIO\nSistema en reposo
+
+USR -> TEC: Presiona '1'
+TEC -> SYS: getKey() = '1'
+SYS -> FSM: teclaPresionada = true
+FSM -> SYS: Transicion a E_BOTON
+SYS -> SYS: alEntrarBoton()
+SYS -> SYS: mostrarInfoEstado()
+note right: "[PIN] ----   #=ok *=cancel"
+
+USR -> TEC: Presiona '2','3','4'
+TEC -> SYS: getKey() = '2','3','4'
+SYS -> SYS: bufferPIN = "1234", digitos = 4
+
+USR -> TEC: Presiona '#' (confirmar)
+TEC -> SYS: getKey() = '#'
+
+SYS -> SYS: validarPIN("1234")
+SYS -> EEP: leerPinMaestro()
+EEP --> SYS: "1234"
+SYS -> SYS: PIN OK
+
+SYS -> FSM: trigger = TRIG_PIN_OK
+FSM -> SYS: Transicion a E_CLAVE_CORRECTA
+SYS -> SYS: alEntrarClaveCorrecta()
+SYS -> REL: encender()
+SYS -> LED: HIGH
+note right: Cerradura abierta\n2 segundos
+
+== CLAVE_CORRECTA - espera 2s ==
+FSM -> SYS: Update() - millis() >= tiempoEstado
+FSM -> SYS: Transicion a E_TIEMPO_2_SEC
+SYS -> SYS: alEntrarTiempo2Seg()
+SYS -> REL: apagar()
+SYS -> LED: LOW
+note right: Countdown 2 segundos
+
+== TIEMPO_2_SEC - cuenta regresiva ==
+FSM -> SYS: Update() - millis() >= tiempoEstado
+FSM -> SYS: Transicion a E_MONITOR_AMBIENTAL
+SYS -> SYS: alEntrarMonitorAmbiental()
+
+== MONITOR_AMBIENTAL - 3 segundos ==
+SYS -> NTC: leerNTC()
+NTC --> SYS: 24.5 C
+note right: Dentro de rango\n20 C < 24.5 < 50 C
+
+SYS -> LDR: leerLDR()
+LDR --> SYS: 450
+note right: Sobre umbral\n450 > 100
+
+loop cada iteracion del loop
+  SYS -> SYS: actualizarEstado()
+  note right: Sin novedad\nUmbrales OK
+end
+
+FSM -> SYS: Update() - 3s sin novedad
+FSM -> SYS: Transicion a E_INICIO
+SYS -> SYS: alEntrarInicio()
+note right: Sistema vuelve a reposo
+
+== INICIO - esperando nueva tecla ==
+note right: Ciclo completado
+
+@enduml

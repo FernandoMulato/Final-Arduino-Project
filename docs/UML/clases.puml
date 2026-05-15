@@ -1,0 +1,215 @@
+@startuml Clases
+' ====================================================================
+' Diagrama de clases - Control de Acceso y Seguridad
+' Arquitectura Computacional - Arduino Uno (ATmega328P)
+' ====================================================================
+
+skinparam classAttributeIconSize 0
+skinparam defaultFontName SansSerif
+skinparam backgroundColor white
+
+' === ESTRUCTURAS DE DATOS ===
+package "Datos" as dataPkg #F0F0F0 {
+  struct Usuario #FFFACD;line:Black {
+    {field} pin[5]: char
+    {field} rol: uint8_t
+    {field} usos: uint8_t
+    {field} activo: bool
+  }
+  note right of Usuario
+    rol: 0=seguridad, 1=operario
+    2=coordinador, 3=gerente
+    usos: max 4 antes de rotar PIN
+  end note
+
+  struct Horario #FFFACD;line:Black {
+    {field} indiceUsuario: uint8_t
+    {field} horaInicio: uint8_t
+    {field} minInicio: uint8_t
+    {field} horaFin: uint8_t
+    {field} minFin: uint8_t
+    {field} dias: uint8_t
+    {field} activo: bool
+  }
+}
+
+' === MAQUINA DE ESTADOS ===
+package "Maquina de Estados" as fsmPkg #F0F0F0 {
+  enum Estado #B3D9FF;line:Black {
+    E_INICIO
+    E_BOTON
+    E_CLAVE_CORRECTA
+    E_CONFIG
+    E_TIEMPO_2_SEC
+    E_MONITOR_AMBIENTAL
+    E_SISTEMA_BLOQUEADO
+    E_BLOQUEO
+    E_ALARMA
+    E_MONITOR_INTRUSOS
+  }
+
+  enum Trigger #B3D9FF;line:Black {
+    TRIG_CONFIG
+    TRIG_PIN_OK
+    TRIG_LOCKOUT
+    TRIG_CANCEL
+    TRIG_SALIR_CONFIG
+    TRIG_ALARMA
+    TRIG_INTRUSION
+  }
+
+  class StateMachine #E8E8E8;line:Black {
+    {method} +SetOnEntering(estado, callback): void
+    {method} +SetOnLeaving(estado, callback): void
+    {method} +AddTransition(origen, destino, guard): void
+    {method} +SetState(estado, bool, bool): void
+    {method} +Update(): void
+  }
+  note right of StateMachine
+    StateMachineLib v1.0.0
+    10 estados, 18 transiciones
+  end note
+}
+
+' === PERIFERICOS ===
+package "Perifericos" as perifPkg #F0F0F0 {
+  class Keypad #D4E6F1;line:Black {
+    {method} +getKey(): char
+  }
+  note right of Keypad
+    Libreria Keypad 3.1.1
+    Matriz 4x4 en D2-D9
+    Map: 1-3A, 4-6B, 7-9C, *0#D
+  end note
+
+  class EEPROM #D4E6F1;line:Black {
+    {method} +read(addr): uint8_t
+    {method} +write(addr, val): void
+    {method} +update(addr, val): void
+  }
+  note left of EEPROM
+    Layout:
+    0: Magic 0xA5
+    1: Cant usuarios
+    2-81: Usuarios (10x8 bytes)
+    82: Cant horarios
+    83-146: Horarios (8x8 bytes)
+    200: PIN maestro
+  end note
+}
+
+' === SENSORES ===
+package "Sensores" as sensPkg #F0F0F0 {
+  class SensorNTC #D5F5E3;line:Black {
+    {field} R1, C1, C2, C3: float
+    {method} +leer(): float
+    {method} +fueraDeRango(): bool
+  }
+  note right of SensorNTC
+    Pin A1
+    Formula Steinhart-Hart
+    Umbral: <20 C o >50 C
+  end note
+
+  class SensorLDR #D5F5E3;line:Black {
+    {method} +leer(): int
+    {method} +oscuridad(): bool
+  }
+  note right of SensorLDR
+    Pin A2
+    Umbral: ADC < 100
+  end note
+
+  class SensorHall #D5F5E3;line:Black {
+    {method} +leer(): int
+    {method} +puertaAbierta(): bool
+  }
+  note right of SensorHall
+    Pin A3
+    Umbral: ADC > 512
+  end note
+
+  class Microfono #D5F5E3;line:Black {
+    {method} +leer(): int
+    {method} +sonidoDetectado(): bool
+  }
+  note right of Microfono
+    Pin A0
+    Umbral: ADC > 800
+  end note
+}
+
+' === ACTUADORES ===
+package "Actuadores" as actPkg #F0F0F0 {
+  class Relay #FADBD8;line:Black {
+    {method} +encender(): void
+    {method} +apagar(): void
+  }
+  note right of Relay: Pin D12 - Cerradura
+
+  class LEDRojo #FADBD8;line:Black {
+    {method} +encender(): void
+    {method} +apagar(): void
+  }
+  note right of LEDRojo: Pin D10 - PWM
+
+  class Buzzer #FADBD8;line:Black {
+    {method} +encender(): void
+    {method} +apagar(): void
+  }
+  note right of Buzzer: Pin D11 - Piezo
+
+  class LEDBuildIn #FADBD8;line:Black {
+    {method} +encender(): void
+    {method} +apagar(): void
+  }
+  note right of LEDBuildIn: Pin D13
+}
+
+' === SISTEMA (controlador central) ===
+package "Controlador" as sysPkg #F0F0F0 {
+  class Sistema #FFCCCC;line:Black {
+    {field} estadoActual: Estado
+    {field} triggerTransicion: Trigger
+    {field} bufferPIN[5]: char
+    {field} intentosFallidos: uint8_t
+    {field} pinMaestro[5]: char
+    {field} nivelConfig: uint8_t
+    ..
+    {method} +configurarFSM(): void
+    {method} +procesarEntrada(): void
+    {method} +actualizarEstado(): void
+    {method} +mostrarInfoEstado(): void
+    {method} +validarPIN(pin): bool
+    {method} +menuConfig(tecla): void
+    {method} +initEEPROM(): void
+    {method} +leerPinMaestro(): void
+  }
+  note bottom of Sistema
+    Single-file: src/main.ino
+    586 lineas, 0 modulos externos
+    F() macro para strings en PROGMEM
+    millis() para timing no bloqueante
+  end note
+}
+
+' === RELACIONES ===
+Sistema --> Estado : "usa"
+Sistema --> Trigger : "dispara"
+Sistema --> StateMachine : "controla"
+Sistema --> Keypad : "lee teclas"
+Sistema --> EEPROM : "persiste datos"
+Sistema --> SensorNTC : "lee temp"
+Sistema --> SensorLDR : "lee luz"
+Sistema --> SensorHall : "lee puerta"
+Sistema --> Microfono : "lee sonido"
+Sistema --> Relay : "activa cierre"
+Sistema --> LEDRojo : "activa alarma"
+Sistema --> Buzzer : "activa sirena"
+Sistema --> LEDBuildIn : "status"
+Sistema --> Usuario : "gestiona"
+Sistema --> Horario : "gestiona"
+
+Usuario "1" --> "*" Horario : "tiene horarios"
+
+@enduml

@@ -1,0 +1,68 @@
+@startuml ConfigUsuario
+' ====================================================================
+' Diagrama de secuencia - Configuracion: alta de usuario
+' CONFIG menu -> agregar usuario con PIN -> guardar en EEPROM -> reposo
+' ====================================================================
+
+skinparam backgroundColor white
+skinparam defaultFontName SansSerif
+skinparam sequenceMessageAlign center
+
+actor "Usuario" as USR #FFFACD
+participant "Keypad\n4x4" as TEC #D4E6F1
+participant "Sistema\n(loop)" as SYS #FFCCCC
+participant "EEPROM" as EEP #D4E6F1
+participant "StateMachine" as FSM #B3D9FF
+
+== BOTON - acceso a CONFIG ==
+USR -> TEC: Presiona '#' (sin digitos)
+TEC -> SYS: getKey() = '#'
+SYS -> SYS: digitosIngresados == 0
+SYS -> FSM: trigger = TRIG_CONFIG
+
+FSM -> SYS: Transicion a E_CONFIG
+SYS -> SYS: alEntrarConfig()
+note right
+  Menu principal:
+  1=Usuario, 2=Horario
+  3=Rol, [*]=Salir
+end note
+
+== Menu - opcion 1: Usuario ==
+USR -> TEC: Presiona '1'
+TEC -> SYS: getKey() = '1'
+SYS -> SYS: opcionConfig = 1
+SYS -> SYS: "Nro usuario (0-9):"
+
+USR -> TEC: Presiona '5'
+TEC -> SYS: getKey() = '5'
+SYS -> SYS: bufferConfig[0] = 5, pasoConfig = 1
+SYS -> SYS: "PIN 4 digitos:"
+
+== Ingreso de PIN ==
+USR -> TEC: Presiona '1'
+TEC -> SYS: getKey() = '1'
+SYS -> SYS: bufferConfig[1] = 1
+
+USR -> TEC: Presiona '2','3','4'
+TEC -> SYS: getKey() = 2,3,4
+SYS -> SYS: bufferConfig = "51234"
+
+SYS -> SYS: Crear Usuario { pin="1234", rol=1, usos=0, activo=true }
+SYS -> EEP: escribirUsuario(5, usuario)
+note right: Guarda en addr 42-49
+SYS -> EEP: actualizar cantUsuarios si necesario
+
+SYS -> SYS: nivelConfig = 0
+SYS -> SYS: alEntrarConfig()
+note right: Vuelve al menu\n"Usuario 5 PIN: 1234"
+
+== Salir de config ==
+USR -> TEC: Presiona '*'
+TEC -> SYS: getKey() = '*'
+SYS -> FSM: trigger = TRIG_SALIR_CONFIG
+FSM -> SYS: Transicion a E_INICIO
+SYS -> SYS: alEntrarInicio()
+note right: "Configuracion guardada"\nSistema en reposo
+
+@enduml

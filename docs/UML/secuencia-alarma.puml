@@ -1,0 +1,70 @@
+@startuml IntrusionAlarma
+' ====================================================================
+' Diagrama de secuencia - Intrusion y alarma
+' Sensor Hall -> ALARMA -> MONITOR_INTRUSOS -> rearme triple -> reposo
+' ====================================================================
+
+skinparam backgroundColor white
+skinparam defaultFontName SansSerif
+skinparam sequenceMessageAlign center
+
+participant "Sensor Hall\nA3" as HALL #D5F5E3
+participant "Microfono\nA0" as MIC #D5F5E3
+participant "Sistema\n(loop)" as SYS #FFCCCC
+participant "StateMachine" as FSM #B3D9FF
+participant "LED Rojo\nD10" as LEDR #FADBD8
+participant "Buzzer\nD11" as BUZ #FADBD8
+
+== MONITOR_AMBIENTAL - deteccion de intrusion ==
+HALL -> SYS: leerHall() = 612
+note right: Umbral > 512\nPuerta abierta!
+SYS -> SYS: trigger = TRIG_ALARMA
+
+FSM -> SYS: Update()
+FSM -> SYS: Transicion a E_ALARMA
+SYS -> SYS: alEntrarAlarma()
+SYS -> BUZ: HIGH
+note right: Alarma activada\nDuracion: 5 segundos
+
+== ALARMA - patron LED + Buzzer ==
+loop Patron LED (300ms on / 700ms off)
+  SYS -> LEDR: HIGH (300ms)
+  SYS -> LEDR: LOW (700ms)
+  note right: Buzzer siempre ON\ndurante ALARMA
+end
+
+MIC -> SYS: leerMicrofono() = 850
+note right: Sonido detectado > 800
+SYS -> SYS: contadorDisparosAlarma = 1
+
+HALL -> SYS: leerHall() = 600
+note right: Puerta sigue abierta
+SYS -> SYS: contadorDisparosAlarma = 2
+
+MIC -> SYS: leerMicrofono() = 920
+SYS -> SYS: contadorDisparosAlarma = 3
+note right: 3 disparos en menos de 12s
+
+SYS -> SYS: REARME: tiempoEstado = millis() + 5s
+note right: Alarma reiniciada\npor otros 5 segundos
+
+FSM -> SYS: Update() - millis() >= tiempoEstado
+FSM -> SYS: Transicion a E_MONITOR_INTRUSOS
+SYS -> SYS: alSalirAlarma()
+SYS -> BUZ: LOW
+SYS -> LEDR: LOW
+note right: Buzzer y LED apagados
+
+== MONITOR_INTRUSOS - vigilancia 2s ==
+HALL -> SYS: leerHall() = 520
+note right: Por debajo de umbral\nPuerta cerrada
+
+MIC -> SYS: leerMicrofono() = 450
+note right: Sin deteccion
+
+FSM -> SYS: Update() - 2s sin novedad
+FSM -> SYS: Transicion a E_INICIO
+SYS -> SYS: alEntrarInicio()
+note right: Sistema restablecido
+
+@enduml
