@@ -1,6 +1,17 @@
+# PlatformIO
 .pio/
 .pioenvs/
 .piolibdeps/
+compile_commands.json
+
+# Agentes / AI
 .atl/
+.claude/
+openspec/
+AGENTS.md
+
+# Python
 __pycache__/
 *.pyc
+
+
