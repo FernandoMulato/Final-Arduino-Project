@@ -1,5 +1,6 @@
 .pio/
 .pioenvs/
 .piolibdeps/
+.atl/.skill-registry.cache.json
 __pycache__/
 *.pyc
