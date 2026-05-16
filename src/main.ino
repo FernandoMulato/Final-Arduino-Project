@@ -1,6 +1,6 @@
 /*
  * SISTEMA DE CONTROL DE ACCESO Y SEGURIDAD
- * Arquitectura Computacional — Arduino Uno (ATmega328P)
+ * Arquitectura Computacional — Arduino Mega (ATmega2560)
  *
  * FSM de 10 estados: INICIO, BOTON, CLAVE_CORRECTA, CONFIG,
  * TIEMPO_2_SEC, MONITOR_AMBIENTAL, SISTEMA_BLOQUEADO, BLOQUEO,
@@ -24,7 +24,7 @@
 #include <EEPROM.h>
 #include <Keypad.h>
 
-// #define USE_LCD  // Descomentar para LCD 16x2 I2C (A4=SDA, A5=SCL)
+// #define USE_LCD  // Descomentar para LCD 16x2 I2C (Mega: D20=SDA, D21=SCL)
 #ifdef USE_LCD
 #include <LiquidCrystal_I2C.h>
 LiquidCrystal_I2C lcd(0x27, 16, 2);

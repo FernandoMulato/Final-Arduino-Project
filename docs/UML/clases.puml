@@ -1,7 +1,7 @@
 @startuml Clases
 ' ====================================================================
 ' Diagrama de clases - Control de Acceso y Seguridad
-' Arquitectura Computacional - Arduino Uno (ATmega328P)
+' Arquitectura Computacional - Arduino Mega (ATmega2560)
 ' ====================================================================
 
 skinparam classAttributeIconSize 0

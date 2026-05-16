@@ -1,6 +1,6 @@
 # Control de Acceso y Seguridad
 
-> **Arquitectura Computacional** — Arduino Uno (ATmega328P)
+> **Arquitectura Computacional** — Arduino Mega (ATmega2560)
 > Proyecto académico: sistema de control de acceso con cerradura inteligente,
 > monitoreo ambiental y detección de intrusiones.
 
@@ -18,10 +18,10 @@ condiciones ambientales.
 
 | Parámetro | Valor |
 |-----------|-------|
-| Microcontrolador | ATmega328P (Arduino Uno) |
+| Microcontrolador | ATmega2560 (Arduino Mega) |
 | Frecuencia | 16 MHz |
-| SRAM | 2 KB (487 B usados — 23.8%) |
-| Flash | 32 KB (13.4 KB usados — 41.6%) |
+| SRAM | 8 KB (487 B usados — 5.9%) |
+| Flash | 256 KB (13.4 KB usados — 5.2%) |
 | EEPROM | 1 KB (147 B usados — 14.4%) |
 | Lenguaje | C++ (Arduino framework) |
 | Librerías | StateMachineLib, Keypad 3.1.1, EEPROM |
@@ -190,6 +190,9 @@ Acceso al menú EEPROM para alta de usuarios, horarios y roles.
 
 ## 🔌 Asignación de Pines
 
+> **Nota:** Todos los pines del proyecto son compatibles entre Arduino Uno y
+> Arduino Mega. La única diferencia está en el bus I2C del LCD opcional.
+
 | Pin | Función | Tipo | Notas |
 |-----|---------|------|-------|
 | D2-D5 | Keypad Rows (4×4) | INPUT_PULLUP | Filas del teclado matricial |
@@ -202,7 +205,8 @@ Acceso al menú EEPROM para alta de usuarios, horarios y roles.
 | A1 | NTC_TERMISTOR | INPUT | Temperatura (Steinhart-Hart) |
 | A2 | LDR | INPUT | Nivel de luz |
 | A3 | HALL | INPUT | Sensor magnético de puerta |
-| A4-A5 | I2C (LCD opcional) | — | SDA/SCL para LCD 16×2 |
+| ⚠️ **D20** | I2C SDA (LCD) | — | **En Mega:** D20, NO A4 |
+| ⚠️ **D21** | I2C SCL (LCD) | — | **En Mega:** D21, NO A5 |
 
 ### Mapa del Teclado 4×4
 
@@ -336,10 +340,10 @@ scripts/build.sh full        # clean + deps + build
 scripts/build.sh -v build    # Verbose
 ```
 
-**Uso de memoria actual:**
+**Uso de memoria actual (en Arduino Mega):**
 ```
-RAM:    487 bytes (23.8%) de 2048
-Flash:  13406 bytes (41.6%) de 32256
+RAM:    487 bytes (5.9%) de 8192
+Flash:  13406 bytes (5.2%) de 262144
 ```
 
 ---
