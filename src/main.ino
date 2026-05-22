@@ -2,24 +2,24 @@
  * ACCESS CONTROL AND SECURITY SYSTEM
  * Arquitectura Computacional — Arduino Mega (ATmega2560)
  *
- * FSM of 6 states: INICIO, CONFIG, BLOQUEO, MONITOR_INTRUSOS,
- * MONITOR_AMBIENTAL, ALARMA
+ * FSM of 6 states: IDLE, OPEN, BLOCKED, INTRUSION_MONITOR,
+ * ENV_MONITOR, ALARM
  *
  * Libraries: StateMachineLib, AsyncTaskLib, Keypad, Servo,
  *            LiquidCrystal, Average, EEPROM
  * Board: Arduino Mega (ATmega2560) — EEPROM: 4KB
  *
  * Transitions:
- *   INICIO --(correct PIN + role in window)--> CONFIG
- *   INICIO --(3 failed attempts)--> BLOQUEO
- *   CONFIG --(2s unlock expired)--> INICIO
- *   BLOQUEO --(5s expired)--> INICIO
- *   MONITOR_AMBIENTAL --(threshold triggered)--> ALARMA
- *   MONITOR_AMBIENTAL --(4s timeout, no event)--> INICIO
- *   MONITOR_INTRUSOS --(hall/mic triggered)--> ALARMA
- *   MONITOR_INTRUSOS --(2s timeout, no event)--> INICIO
- *   ALARMA --(2s, <3 in 12s)--> MONITOR_INTRUSOS
- *   ALARMA --(3 events in 12s)--> extended block -> MONITOR_INTRUSOS
+ *   IDLE --(correct PIN + role in window)--> OPEN
+ *   IDLE --(3 failed attempts)--> BLOCKED
+ *   OPEN --(2s unlock expired)--> IDLE
+ *   BLOCKED --(5s expired)--> IDLE
+ *   ENV_MONITOR --(threshold triggered)--> ALARM
+ *   ENV_MONITOR --(4s timeout, no event)--> IDLE
+ *   INTRUSION_MONITOR --(hall/mic triggered)--> ALARM
+ *   INTRUSION_MONITOR --(2s timeout, no event)--> IDLE
+ *   ALARM --(2s, <3 in 12s)--> INTRUSION_MONITOR
+ *   ALARM --(3 events in 12s)--> extended block -> INTRUSION_MONITOR
  */
 
 // ============================================================================
@@ -68,10 +68,10 @@ constexpr unsigned long T_PIN_TIMEOUT = 10000;  // PIN input timeout
 constexpr unsigned long T_TRIPLE      = 12000;  // Triple alarm window
 
 // LED blink patterns — Per PRD
-constexpr unsigned long BLK_ON  = 300;   // BLOQUEO on
-constexpr unsigned long BLK_OFF = 700;   // BLOQUEO off
-constexpr unsigned long ALM_ON  = 100;   // ALARMA on
-constexpr unsigned long ALM_OFF = 500;   // ALARMA off
+constexpr unsigned long BLK_ON  = 300;   // BLOCKED on
+constexpr unsigned long BLK_OFF = 700;   // BLOCKED off
+constexpr unsigned long ALM_ON  = 100;   // ALARM on
+constexpr unsigned long ALM_OFF = 500;   // ALARM off
 
 // ============================================================================
 // SENSOR THRESHOLDS
@@ -123,12 +123,12 @@ constexpr uint8_t OFF_HIST     = 8;   // 16 bytes (4 x 4-byte PINs)
 // ENUMERATIONS
 // ============================================================================
 enum State : uint8_t {
-  S_INICIO,
-  S_CONFIG,
-  S_BLOQUEO,
-  S_MONITOR_INTRUSOS,
-  S_MONITOR_AMBIENTAL,
-  S_ALARMA
+  S_IDLE,
+  S_OPEN,
+  S_BLOCKED,
+  S_INTRUSION_MONITOR,
+  S_ENV_MONITOR,
+  S_ALARM
 };
 
 enum Trigger : uint8_t {
@@ -143,14 +143,14 @@ enum Trigger : uint8_t {
 // ROLE DEFINITIONS — Per PRD section 6.1
 // ============================================================================
 enum Role : uint8_t {
-  ROLE_SEGURIDAD   = 1,
-  ROLE_OPERARIO    = 2,
-  ROLE_COORDINADOR = 3,
-  ROLE_GERENTE     = 4
+  ROLE_SECURITY   = 1,
+  ROLE_OPERATOR    = 2,
+  ROLE_COORDINATOR = 3,
+  ROLE_MANAGER     = 4
 };
 
 constexpr const char* ROLE_NAMES[5] = {
-  "", "Seguridad", "Operario", "Coordinador", "Gerente"
+  "", "Security", "Operator", "Coordinator", "Manager"
 };
 
 // ============================================================================
@@ -158,7 +158,7 @@ constexpr const char* ROLE_NAMES[5] = {
 // ============================================================================
 // FSM: 6 states, 10 transitions
 StateMachine fsm(6, 10);
-State currentState = S_INICIO;
+State currentState = S_IDLE;
 
 // Keypad 4x4
 constexpr uint8_t KP_ROWS = 4, KP_COLS = 4;
@@ -233,18 +233,18 @@ void updateDisplay();
 void processInput();
 void updateState();
 
-void onEnterInicio();
-void onLeaveInicio();
-void onEnterConfig();
-void onLeaveConfig();
-void onEnterBloqueo();
-void onLeaveBloqueo();
-void onEnterMonitorIntrusos();
-void onLeaveMonitorIntrusos();
-void onEnterMonitorAmbiental();
-void onLeaveMonitorAmbiental();
-void onEnterAlarma();
-void onLeaveAlarma();
+void onEnterIdle();
+void onLeaveIdle();
+void onEnterOpen();
+void onLeaveOpen();
+void onEnterBlocked();
+void onLeaveBlocked();
+void onEnterIntrusionMonitor();
+void onLeaveIntrusionMonitor();
+void onEnterEnvMonitor();
+void onLeaveEnvMonitor();
+void onEnterAlarm();
+void onLeaveAlarm();
 
 // ============================================================================
 // EEPROM FUNCTIONS
@@ -396,7 +396,7 @@ void updateDisplay() {
   lcd.clear();
   lcd.setCursor(0, 0);
   switch (currentState) {
-    case S_INICIO: {
+    case S_IDLE: {
       if (menuActive) {
         lcd.print(F("CHANGE PIN"));
         lcd.setCursor(0, 1);
@@ -417,7 +417,7 @@ void updateDisplay() {
       }
       break;
     }
-    case S_CONFIG: {
+    case S_OPEN: {
       lcd.print(F("ACCESS GRANTED"));
       unsigned long elapsed = millis() - stateEntryTime;
       unsigned long rem = (elapsed < T_UNLOCK) ? (T_UNLOCK - elapsed) / 1000 : 0;
@@ -427,12 +427,12 @@ void updateDisplay() {
       lcd.print('s');
       break;
     }
-    case S_BLOQUEO:
+    case S_BLOCKED:
       lcd.print(F("BLOCKED"));
       lcd.setCursor(0, 1);
       lcd.print(F("Wait 5s..."));
       break;
-    case S_MONITOR_AMBIENTAL: {
+    case S_ENV_MONITOR: {
       lcd.print(F("MONITOR ENV"));
       lcd.setCursor(0, 1);
       lcd.print(F("T:"));
@@ -441,10 +441,10 @@ void updateDisplay() {
       lcd.print(lightLevel);
       break;
     }
-    case S_MONITOR_INTRUSOS:
+    case S_INTRUSION_MONITOR:
       lcd.print(F("MONITOR SEC"));
       break;
-    case S_ALARMA:
+    case S_ALARM:
       lcd.print(F("!!! ALARM !!!"));
       lcd.setCursor(0, 1);
       lcd.print(F("Intrusion!"));
@@ -455,8 +455,8 @@ void updateDisplay() {
 // ============================================================================
 // FSM STATE HANDLERS
 // ============================================================================
-void onEnterInicio() {
-  currentState = S_INICIO;
+void onEnterIdle() {
+  currentState = S_IDLE;
   failCount = 0;
   pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
   trig = TRIG_NONE;
@@ -464,69 +464,69 @@ void onEnterInicio() {
   blinkActive = false; setLED(LOW); setBuzzer(false);
   lockDoor();
   lastLcdUpdate = 0;  // Force LCD update
-  Serial.println(F("[STATE] INICIO — System ready"));
+  Serial.println(F("[STATE] IDLE — System ready"));
 }
 
-void onLeaveInicio() {
+void onLeaveIdle() {
   pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
   menuActive = false;
 }
 
-void onEnterConfig() {
-  currentState = S_CONFIG;
+void onEnterOpen() {
+  currentState = S_OPEN;
   trig = TRIG_NONE;
   stateEntryTime = millis();
   unlockDoor();
-  Serial.println(F("[STATE] CONFIG — Door unlocked (2s)"));
+  Serial.println(F("[STATE] OPEN — Door unlocked (2s)"));
 }
 
-void onLeaveConfig() {
+void onLeaveOpen() {
   lockDoor();
-  Serial.println(F("[STATE] CONFIG — Door locked"));
+  Serial.println(F("[STATE] OPEN — Door locked"));
 }
 
-void onEnterBloqueo() {
-  currentState = S_BLOQUEO;
+void onEnterBlocked() {
+  currentState = S_BLOCKED;
   trig = TRIG_NONE;
   stateEntryTime = millis();
   blinkActive = true; blinkOnMs = BLK_ON; blinkOffMs = BLK_OFF;
   lastBlink = millis(); ledOn = false;
-  Serial.println(F("[STATE] BLOQUEO — 3 failed attempts, 5s block"));
+  Serial.println(F("[STATE] BLOCKED — 3 failed attempts, 5s block"));
 }
 
-void onLeaveBloqueo() {
+void onLeaveBlocked() {
   blinkActive = false; setLED(LOW);
 }
 
-void onEnterMonitorIntrusos() {
-  currentState = S_MONITOR_INTRUSOS;
+void onEnterIntrusionMonitor() {
+  currentState = S_INTRUSION_MONITOR;
   trig = TRIG_NONE;
   stateEntryTime = millis();
-  Serial.println(F("[STATE] MONITOR_INTRUSOS — Watching..."));
+  Serial.println(F("[STATE] INTRUSION_MONITOR — Watching..."));
 }
 
-void onLeaveMonitorIntrusos() {}
+void onLeaveIntrusionMonitor() {}
 
-void onEnterMonitorAmbiental() {
-  currentState = S_MONITOR_AMBIENTAL;
+void onEnterEnvMonitor() {
+  currentState = S_ENV_MONITOR;
   trig = TRIG_NONE;
   stateEntryTime = millis();
-  Serial.println(F("[STATE] MONITOR_AMBIENTAL — Temp + light"));
+  Serial.println(F("[STATE] ENV_MONITOR — Temp + light"));
 }
 
-void onLeaveMonitorAmbiental() {}
+void onLeaveEnvMonitor() {}
 
-void onEnterAlarma() {
-  currentState = S_ALARMA;
+void onEnterAlarm() {
+  currentState = S_ALARM;
   trig = TRIG_NONE;
   stateEntryTime = millis();
   setBuzzer(true);
   blinkActive = true; blinkOnMs = ALM_ON; blinkOffMs = ALM_OFF;
   lastBlink = millis(); ledOn = false;
-  Serial.println(F("[STATE] ALARMA — Intrusion!"));
+  Serial.println(F("[STATE] ALARM — Intrusion!"));
 }
 
-void onLeaveAlarma() {
+void onLeaveAlarm() {
   setBuzzer(false);
   blinkActive = false; setLED(LOW);
 }
@@ -640,7 +640,7 @@ void handlePinEntry(char key) {
 void processInput() {
   char key = keypad.getKey();
 
-  if (currentState == S_INICIO) {
+  if (currentState == S_IDLE) {
     if (key != NO_KEY) {
       if (menuActive) {
         handleMenuKey(key);
@@ -667,19 +667,19 @@ void updateState() {
   if (trig == TRIG_NONE) {
     unsigned long elapsed = now - stateEntryTime;
     switch (currentState) {
-      case S_CONFIG:
+      case S_OPEN:
         if (elapsed >= T_UNLOCK) trig = TRIG_AUTH_OK;  // reuse to exit
         break;
-      case S_BLOQUEO:
+      case S_BLOCKED:
         if (elapsed >= T_LOCKOUT) trig = TRIG_AUTH_OK;
         break;
-      case S_MONITOR_AMBIENTAL:
+      case S_ENV_MONITOR:
         if (elapsed >= T_ENV_MONITOR) trig = TRIG_AUTH_OK;
         break;
-      case S_MONITOR_INTRUSOS:
+      case S_INTRUSION_MONITOR:
         if (elapsed >= T_INTRUSION) trig = TRIG_AUTH_OK;
         break;
-      case S_ALARMA:
+      case S_ALARM:
         if (elapsed >= T_ALARM) trig = TRIG_AUTH_OK;
         break;
       default: break;
@@ -702,7 +702,7 @@ void updateState() {
 
   // --- State-specific sensor monitoring ---
   switch (currentState) {
-    case S_MONITOR_AMBIENTAL:
+    case S_ENV_MONITOR:
       if ((temperature > 0 && temperature < TEMP_LOW) ||
           temperature > TEMP_HIGH ||
           (lightLevel > 0 && lightLevel < LIGHT_MIN)) {
@@ -712,7 +712,7 @@ void updateState() {
       }
       break;
 
-    case S_MONITOR_INTRUSOS:
+    case S_INTRUSION_MONITOR:
       if (hallVal > HALL_OPEN || micVal > SOUND_HIGH) {
         trig = TRIG_INTRUSION;
         Serial.println(F("[INTRUSION] Detected!"));
@@ -720,7 +720,7 @@ void updateState() {
       }
       break;
 
-    case S_ALARMA:
+    case S_ALARM:
       // Triple alarm detection within T_TRIPLE window
       if (hallVal > HALL_OPEN || micVal > SOUND_HIGH) {
         alarmCount++;
@@ -761,41 +761,41 @@ void updateState() {
 // ============================================================================
 void setupFSM() {
   // State entry handlers
-  fsm.SetOnEntering(S_INICIO, onEnterInicio);
-  fsm.SetOnEntering(S_CONFIG, onEnterConfig);
-  fsm.SetOnEntering(S_BLOQUEO, onEnterBloqueo);
-  fsm.SetOnEntering(S_MONITOR_INTRUSOS, onEnterMonitorIntrusos);
-  fsm.SetOnEntering(S_MONITOR_AMBIENTAL, onEnterMonitorAmbiental);
-  fsm.SetOnEntering(S_ALARMA, onEnterAlarma);
+  fsm.SetOnEntering(S_IDLE, onEnterIdle);
+  fsm.SetOnEntering(S_OPEN, onEnterOpen);
+  fsm.SetOnEntering(S_BLOCKED, onEnterBlocked);
+  fsm.SetOnEntering(S_INTRUSION_MONITOR, onEnterIntrusionMonitor);
+  fsm.SetOnEntering(S_ENV_MONITOR, onEnterEnvMonitor);
+  fsm.SetOnEntering(S_ALARM, onEnterAlarm);
 
   // State exit handlers
-  fsm.SetOnLeaving(S_INICIO, onLeaveInicio);
-  fsm.SetOnLeaving(S_CONFIG, onLeaveConfig);
-  fsm.SetOnLeaving(S_BLOQUEO, onLeaveBloqueo);
-  fsm.SetOnLeaving(S_MONITOR_INTRUSOS, onLeaveMonitorIntrusos);
-  fsm.SetOnLeaving(S_MONITOR_AMBIENTAL, onLeaveMonitorAmbiental);
-  fsm.SetOnLeaving(S_ALARMA, onLeaveAlarma);
+  fsm.SetOnLeaving(S_IDLE, onLeaveIdle);
+  fsm.SetOnLeaving(S_OPEN, onLeaveOpen);
+  fsm.SetOnLeaving(S_BLOCKED, onLeaveBlocked);
+  fsm.SetOnLeaving(S_INTRUSION_MONITOR, onLeaveIntrusionMonitor);
+  fsm.SetOnLeaving(S_ENV_MONITOR, onLeaveEnvMonitor);
+  fsm.SetOnLeaving(S_ALARM, onLeaveAlarm);
 
   // Transitions
   // Auth OK (also used as "state timer done" for timed states)
-  fsm.AddTransition(S_INICIO, S_CONFIG, []() { return trig == TRIG_AUTH_OK; });
+  fsm.AddTransition(S_IDLE, S_OPEN, []() { return trig == TRIG_AUTH_OK; });
 
   // 3 failed attempts
-  fsm.AddTransition(S_INICIO, S_BLOQUEO, []() { return trig == TRIG_LOCKOUT; });
+  fsm.AddTransition(S_IDLE, S_BLOCKED, []() { return trig == TRIG_LOCKOUT; });
 
   // Timed states: any non-event trigger means time expired
   auto timedDone = []() { return trig == TRIG_AUTH_OK; };
-  fsm.AddTransition(S_CONFIG, S_INICIO, timedDone);
-  fsm.AddTransition(S_BLOQUEO, S_INICIO, timedDone);
-  fsm.AddTransition(S_MONITOR_AMBIENTAL, S_INICIO, timedDone);
-  fsm.AddTransition(S_MONITOR_INTRUSOS, S_INICIO, timedDone);
+  fsm.AddTransition(S_OPEN, S_IDLE, timedDone);
+  fsm.AddTransition(S_BLOCKED, S_IDLE, timedDone);
+  fsm.AddTransition(S_ENV_MONITOR, S_IDLE, timedDone);
+  fsm.AddTransition(S_INTRUSION_MONITOR, S_IDLE, timedDone);
 
   // Threshold/intrusion events
-  fsm.AddTransition(S_MONITOR_AMBIENTAL, S_ALARMA, []() { return trig == TRIG_ENV_ALARM; });
-  fsm.AddTransition(S_MONITOR_INTRUSOS, S_ALARMA, []() { return trig == TRIG_INTRUSION; });
+  fsm.AddTransition(S_ENV_MONITOR, S_ALARM, []() { return trig == TRIG_ENV_ALARM; });
+  fsm.AddTransition(S_INTRUSION_MONITOR, S_ALARM, []() { return trig == TRIG_INTRUSION; });
 
   // Alarm -> intrusion monitoring when timer expires
-  fsm.AddTransition(S_ALARMA, S_MONITOR_INTRUSOS, timedDone);
+  fsm.AddTransition(S_ALARM, S_INTRUSION_MONITOR, timedDone);
 }
 
 // ============================================================================
@@ -843,7 +843,7 @@ void setup() {
 
   // FSM
   setupFSM();
-  fsm.SetState(S_INICIO, false, true);
+  fsm.SetState(S_IDLE, false, true);
 
   Serial.println(F("=== ACCESS CONTROL & SECURITY ==="));
   Serial.println(F("Keys: [0-9]=digit [#]=ok [*]=cancel"));

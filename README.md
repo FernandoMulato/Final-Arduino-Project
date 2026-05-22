@@ -38,7 +38,7 @@ state machine, peripherals, sensors, actuators, and the central controller.
 
 | System Classes |
 |----------------|
-| ![Classes](docs/UML/Clases.png) |
+| ![Classes](docs/UML/Classes.png) |
 
 **Package Legend:**
 | Color | Meaning |
@@ -61,23 +61,23 @@ The FSM is the architectural core. It implements **6 states** with
 
 | # | State | Description | Timing |
 |---|-------|-------------|--------|
-| 1 | `S_INICIO` | Idle. Waits for keypad input or menu trigger. | PIN timeout 10s |
-| 2 | `S_CONFIG` | Valid PIN + role in window. Servo unlocked. | 2s |
-| 3 | `S_BLOQUEO` | 3 failed attempts. Red LED 300/700ms. | 5s |
-| 4 | `S_MONITOR_INTRUSOS` | Hall + mic monitoring. | 2s |
-| 5 | `S_MONITOR_AMBIENTAL` | Temp + light monitoring (RunningAverage). | 4s |
-| 6 | `S_ALARMA` | Buzzer ON. Red LED 100/500ms. | 2s + triple rearm |
+| 1 | `S_IDLE` | Idle. Waits for keypad input or menu trigger. | PIN timeout 10s |
+| 2 | `S_OPEN` | Valid PIN + role in window. Servo unlocked. | 2s |
+| 3 | `S_BLOCKED` | 3 failed attempts. Red LED 300/700ms. | 5s |
+| 4 | `S_INTRUSION_MONITOR` | Hall + mic monitoring. | 2s |
+| 5 | `S_ENV_MONITOR` | Temp + light monitoring (RunningAverage). | 4s |
+| 6 | `S_ALARM` | Buzzer ON. Red LED 100/500ms. | 2s + triple rearm |
 
 ### Main Transitions
 
 ```
-INICIO --(correct PIN + role in window)--> CONFIG --(2s)--> INICIO
-INICIO --(3 failed attempts)--> BLOQUEO --(5s)--> INICIO
-MONITOR_AMBIENTAL --(threshold)--> ALARMA --(2s)--> MONITOR_INTRUSOS
-MONITOR_AMBIENTAL --(4s no event)--> INICIO
-MONITOR_INTRUSOS --(hall/mic)--> ALARMA (triple rearm 12s)
-MONITOR_INTRUSOS --(2s no event)--> INICIO
-INICIO --(# without digits)--> Menu (PIN change, within INICIO)
+IDLE --(correct PIN + role in window)--> OPEN --(2s)--> IDLE
+IDLE --(3 failed attempts)--> BLOCKED --(5s)--> IDLE
+ENV_MONITOR --(threshold)--> ALARM --(2s)--> INTRUSION_MONITOR
+ENV_MONITOR --(4s no event)--> IDLE
+INTRUSION_MONITOR --(hall/mic)--> ALARM (triple rearm 12s)
+INTRUSION_MONITOR --(2s no event)--> IDLE
+IDLE --(# without digits)--> Menu (PIN change, within IDLE)
 ```
 
 ---
@@ -90,61 +90,61 @@ Correct PIN + role in window → servo unlock (2s) → return to idle.
 
 | Entry Sequence |
 |----------------|
-| ![EntrySuccess](docs/UML/IngresoExitoso.png) |
+| ![EntrySuccess](docs/UML/SuccessfulEntry.png) |
 
 **Flow:**
 1. User presses digits → stored in `pinBuf[]`
 2. Confirms with `#` → validated via `findUserByPin()`
 3. Role time window checked via `isInTimeWindow()`
-4. Auth OK → transition to `S_CONFIG` → servo unlocked 2s
-5. Timer expires → return to `S_INICIO`
+4. Auth OK → transition to `S_OPEN` → servo unlocked 2s
+5. Timer expires → return to `S_IDLE`
 
 ---
 
 ### Intrusion and Alarm
 
-Hall or microphone trigger → ALARMA (2s, buzzer + LED) → MONITOR_INTRUSOS → triple rearm.
+Hall or microphone trigger → ALARM (2s, buzzer + LED) → INTRUSION_MONITOR → triple rearm.
 
 | Alarm Sequence |
 |----------------|
-| ![IntrusionAlarm](docs/UML/IntrusionAlarma.png) |
+| ![IntrusionAlarm](docs/UML/IntrusionAlarm.png) |
 
 **Flow:**
 1. `hallVal > 512` (door open) or `micVal > 800` (sound)
-2. Transition to `S_ALARMA` → buzzer ON + LED flash (100/500ms)
+2. Transition to `S_ALARM` → buzzer ON + LED flash (100/500ms)
 3. Each new detection increments `alarmCount`
 4. 3 events within 12s (`T_TRIPLE`) → alarm timer reset
-5. Timer expires → transition to `S_MONITOR_INTRUSOS` (2s)
-6. No new events → return to `S_INICIO`
+5. Timer expires → transition to `S_INTRUSION_MONITOR` (2s)
+6. No new events → return to `S_IDLE`
 
 ---
 
 ### Blocked State
 
-3 wrong PINs → BLOQUEO (5s, LED 300/700ms) → restore.
+3 wrong PINs → BLOCKED (5s, LED 300/700ms) → restore.
 
 | Block Sequence |
 |----------------|
-| ![BlockAttempts](docs/UML/BloqueoIntentos.png) |
+| ![BlockAttempts](docs/UML/BlockedAttempts.png) |
 
 **Flow:**
 1. Each wrong PIN increments `failCount`
-2. At 3 → `TRIG_LOCKOUT` → transition to `S_BLOQUEO`
+2. At 3 → `TRIG_LOCKOUT` → transition to `S_BLOCKED`
 3. LED blinks 300ms ON / 700ms OFF for 5s
-4. Timer expires → return to `S_INICIO` with `failCount = 0`
+4. Timer expires → return to `S_IDLE` with `failCount = 0`
 
 ---
 
 ### PIN Change Menu
 
-From INICIO, press `#` with no digits → menu → change PIN with history check.
+From IDLE, press `#` with no digits → menu → change PIN with history check.
 
 | Config Sequence |
 |-----------------|
-| ![ConfigUser](docs/UML/ConfigUsuario.png) |
+| ![ConfigUser](docs/UML/UserConfig.png) |
 
 **Flow:**
-1. From `S_INICIO`, press `#` with empty pin → menu mode activated
+1. From `S_IDLE`, press `#` with empty pin → menu mode activated
 2. Step 0: Enter current PIN → validated
 3. Step 1: Enter new PIN (4-6 digits) → checked against history
 4. New PIN saved → `rotatePin()` pushes old PIN to history, resets uses
@@ -190,7 +190,7 @@ From INICIO, press `#` with no digits → menu → change PIN with history check
 | D2-D5 | Keypad Rows (4x4) | INPUT_PULLUP | Matrix rows |
 | D6-D9 | Keypad Columns | INPUT | Matrix columns |
 | D10 | RED_LED | OUTPUT | Alarm/block pattern |
-| D11 | BUZZER | OUTPUT | Piezo, on in ALARMA |
+| D11 | BUZZER | OUTPUT | Piezo, on in ALARM |
 | D12 | SERVO | OUTPUT | PWM, door lock |
 | D22 | LCD_RS | OUTPUT | LCD register select |
 | D23 | LCD_EN | OUTPUT | LCD enable |
@@ -233,7 +233,7 @@ From INICIO, press `#` with no digits → menu → change PIN with history check
 ```
 [PIN 4B][role 1B][uses 1B][active 1B][histIdx 1B][history 16B]
 ```
-- `role`: 1=Seguridad, 2=Operario, 3=Coordinador, 4=Gerente
+- `role`: 1=Security, 2=Operator, 3=Coordinator, 4=Manager
 - `uses`: counter, max 4 before PIN rotation
 - `histIdx`: current index in circular history buffer
 - `history`: 4 previous PINs (4 bytes each)
@@ -258,8 +258,8 @@ From INICIO, press `#` with no digits → menu → change PIN with history check
 
 | State | On | Off | Pattern |
 |-------|----|-----|---------|
-| `S_BLOQUEO` | 300 ms | 700 ms | Slow flash |
-| `S_ALARMA` | 100 ms | 500 ms | Fast flash |
+| `S_BLOCKED` | 300 ms | 700 ms | Slow flash |
+| `S_ALARM` | 100 ms | 500 ms | Fast flash |
 
 ---
 
@@ -293,17 +293,17 @@ When uses reaches 4:
 ### Failed Attempt Policy
 
 - Maximum 3 consecutive failed attempts
-- At threshold: 5-second block (S_BLOQUEO) with LED 300/700ms
+- At threshold: 5-second block (S_BLOCKED) with LED 300/700ms
 - After block: counter resets to 0
 
 ### User Roles
 
 | Code | Role | Access Level |
 |------|------|--------------|
-| 1 | Seguridad | Full access |
-| 2 | Operario | Production area (time-limited) |
-| 3 | Coordinador | Extended access |
-| 4 | Gerente | Full access + user management |
+| 1 | Security | Full access |
+| 2 | Operator | Production area (time-limited) |
+| 3 | Coordinator | Extended access |
+| 4 | Manager | Full access + user management |
 
 Time windows are hardcoded as `constexpr` tables. With an RTC module,
 `isInTimeWindow()` validates access per role schedule.
@@ -361,16 +361,16 @@ Arduino-Project/
 │   ├── examples/              # Sensor example sketches
 │   ├── PRD.md                 # Product Requirements Document
 │   └── UML/                   # Generated diagrams
-│       ├── Clases.png
-│       ├── IngresoExitoso.png
-│       ├── IntrusionAlarma.png
-│       ├── BloqueoIntentos.png
-│       ├── ConfigUsuario.png
-│       ├── clases.puml
-│       ├── secuencia-ingreso.puml
-│       ├── secuencia-alarma.puml
-│       ├── secuencia-bloqueo.puml
-│       └── secuencia-config.puml
+│       ├── Classes.png
+│       ├── SuccessfulEntry.png
+│       ├── IntrusionAlarm.png
+│       ├── BlockedAttempts.png
+│       ├── UserConfig.png
+│       ├── classes.puml
+│       ├── sequence-entry.puml
+│       ├── sequence-alarm.puml
+│       ├── sequence-blocked.puml
+│       └── sequence-config.puml
 ├── scripts/
 │   └── build.sh              # Build script
 ├── platformio.ini             # PlatformIO config
@@ -383,35 +383,35 @@ Arduino-Project/
 
 ```
                     ┌──────────┐
-                    │  INICIO  │ <────────────────────────┐
+                    │   IDLE   │ <────────────────────────┐
                     └────┬─────┘                          │
                          │ correct PIN + role             │
                          v                                │
                     ┌──────────┐                          │
-                    │  CONFIG  │── 2s ─────────────────────┤
+                    │   OPEN   │── 2s ─────────────────────┤
                     └──────────┘                          │
                                                           │
                     ┌──────────┐                          │
-         ┌────────>│ BLOQUEO  │── 5s ─────────────────────┤
+         ┌────────>│  BLOCKED │── 5s ─────────────────────┤
          │         └──────────┘                          │
          │                                                │
          │         ┌──────────────────┐                   │
-         │         │ MONITOR AMBIENTAL│── 4s ─────────────┤
+         │         │   ENV_MONITOR   │── 4s ──────────────┤
          │         └────────┬─────────┘                   │
          │                  │ threshold                   │
          │                  v                             │
          │         ┌──────────┐                           │
-         │         │  ALARMA  │── 2s ─────────────────────┘
+         │         │   ALARM  │── 2s ─────────────────────┘
          │         └─────┬────┘         ┌──────────────────┐
          │               │ triple       │                  │
          │               v              v                  │
          │         ┌──────────────────┐                    │
-         │         │ MONITOR INTRUSOS │── 2s ──────────────┘
+         │         │INTRUSION_MONITOR │── 2s ──────────────┘
          │         └───────┬──────────┘
          │                 │ hall/mic
          │                 v
          │         ┌──────────┐
-         └─────────│  ALARMA  │ (rearm)
+         └─────────│   ALARM  │ (rearm)
                    └──────────┘
 ```
 

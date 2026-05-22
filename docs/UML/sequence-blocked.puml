@@ -1,7 +1,7 @@
-@startuml BloqueoIntentos
+@startuml BlockedAttempts
 ' ====================================================================
 ' Sequence diagram - Block after 3 failed attempts
-' PIN incorrect x3 -> BLOQUEO 5s (LED 300/700ms) -> INICIO
+' PIN incorrect x3 -> BLOQUEO 5s (LED 300/700ms) -> IDLE
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -16,7 +16,7 @@ participant "StateMachine" as FSM #B3D9FF
 participant "Red LED\nD10" as LED #FADBD8
 participant "LCD\n16x2" as LCD #D4E6F1
 
-== INICIO - failed attempts ==
+== IDLE - failed attempts ==
 
 loop 3 failed attempts
   USR -> KPD: Enters wrong PIN + '#'
@@ -29,12 +29,12 @@ end
 
 SYS -> SYS: failCount >= 3
 SYS -> FSM: trig = TRIG_LOCKOUT
-FSM -> SYS: Transition to S_BLOQUEO
-SYS -> SYS: onEnterBloqueo()
+FSM -> SYS: Transition to S_BLOCKED
+SYS -> SYS: onEnterBlocked()
 SYS -> LED: blink active (300/700ms)
 LCD -> SYS: "BLOCKED"\n"Wait 5s..."
 
-== BLOQUEO - LED blink 5 seconds ==
+== BLOCKED - LED blink 5 seconds ==
 note right: T_LOCKOUT = 5000ms
 loop ~6 cycles of 300ms ON / 700ms OFF
   SYS -> LED: ON (300ms)
@@ -42,10 +42,10 @@ loop ~6 cycles of 300ms ON / 700ms OFF
 end
 
 FSM -> SYS: trig = TRIG_AUTH_OK (5s expired)
-SYS -> SYS: onLeaveBloqueo()
+SYS -> SYS: onLeaveBlocked()
 SYS -> LED: off
-FSM -> SYS: Transition to S_INICIO
-SYS -> SYS: onEnterInicio()
+FSM -> SYS: Transition to S_IDLE
+SYS -> SYS: onEnterIdle()
 note right: failCount = 0\nSystem restored
 
 @enduml

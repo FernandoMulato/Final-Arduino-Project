@@ -1,7 +1,7 @@
-@startuml IntrusionAlarma
+@startuml IntrusionAlarm
 ' ====================================================================
 ' Sequence diagram - Intrusion and alarm
-' Hall sensor -> ALARMA (2s, 100/500ms) -> MONITOR_INTRUSOS -> INICIO
+' Hall sensor -> ALARM (2s, 100/500ms) -> MONITOR_INTRUSOS -> IDLE
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -16,7 +16,7 @@ participant "StateMachine" as FSM #B3D9FF
 participant "Red LED\nD10" as LED #FADBD8
 participant "Buzzer\nD11" as BUZ #FADBD8
 
-== MONITOR_INTRUSOS - waiting ==
+== INTRUSION MONITOR - waiting ==
 note right: State S_MONITOR_INTRUSOS\nLCD: "MONITOR SEC"
 
 loop each sensorTask tick (200ms)
@@ -28,16 +28,16 @@ loop each sensorTask tick (200ms)
 end
 
 FSM -> SYS: Update()
-FSM -> SYS: Transition to S_ALARMA
-SYS -> SYS: onEnterAlarma()
+FSM -> SYS: Transition to S_ALARM
+SYS -> SYS: onEnterAlarm()
 SYS -> BUZ: HIGH
 SYS -> LED: blink active (100/500ms)
 note right: Alarm activated\nDuration: 2 seconds
 
-== ALARMA - blink + buzzer ==
+== ALARM - blink + buzzer ==
 loop until timer expires
   SYS -> SYS: Blink: LED 100ms ON / 500ms OFF
-  note right: Buzzer always ON\nduring ALARMA
+  note right: Buzzer always ON\nduring ALARM
 end
 
 MIC -> SYS: micVal > 800 (sonic event)
@@ -49,19 +49,19 @@ SYS -> SYS: alarmCount = 3
 note right: 3 events in <12s = TRIPLE!\nAlarm timer reset
 
 FSM -> SYS: trig = TRIG_AUTH_OK (2s expired)
-FSM -> SYS: Transition to S_MONITOR_INTRUSOS
-SYS -> SYS: onLeaveAlarma()
+FSM -> SYS: Transition to S_INTRUSION_MONITOR
+SYS -> SYS: onLeaveAlarm()
 SYS -> BUZ: LOW
 SYS -> LED: off
 
-== MONITOR_INTRUSOS - 2s watch ==
+== INTRUSION MONITOR - 2s watch ==
 HALL --> SYS: hallVal = 420 (door closed)
 MIC --> SYS: micVal = 350 (no sound)
 SYS -> SYS: No intrusion - timer expires
 
 FSM -> SYS: trig = TRIG_AUTH_OK (2s)
-FSM -> SYS: Transition to S_INICIO
-SYS -> SYS: onEnterInicio()
+FSM -> SYS: Transition to S_IDLE
+SYS -> SYS: onEnterIdle()
 note right: System restored
 
 @enduml

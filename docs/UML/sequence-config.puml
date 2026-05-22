@@ -1,7 +1,7 @@
-@startuml ConfigUsuario
+@startuml UserConfig
 ' ====================================================================
-' Sequence diagram - PIN change via menu (within INICIO state)
-' From INICIO, press # with no digits -> menu -> change PIN -> save
+' Sequence diagram - PIN change via menu (within IDLE state)
+' From IDLE, press # with no digits -> menu -> change PIN -> save
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -14,8 +14,8 @@ participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
 participant "LCD\n16x2" as LCD #D4E6F1
 
-== INICIO - entering menu mode ==
-note right: State S_INICIO\nLCD: "IDLE", "Enter PIN:"
+== IDLE - entering menu mode ==
+note right: State S_IDLE\nLCD: "IDLE", "Enter PIN:"
 
 USR -> KPD: Presses '#' (no digits entered)
 KPD -> SYS: getKey() = '#'
@@ -56,6 +56,6 @@ USR -> KPD: Presses '*'
 KPD -> SYS: getKey() = '*'
 SYS -> SYS: menuActive = false, menuStep = 0
 LCD -> SYS: "IDLE"\n"Enter PIN:"
-note right: Any time during menu\n'*' cancels and returns\nto idle INICIO
+note right: Any time during menu\n'*' cancels and returns\nto idle IDLE
 
 @enduml

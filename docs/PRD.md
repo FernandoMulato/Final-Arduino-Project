@@ -1,216 +1,216 @@
-# PRD — Sistema de Control de Acceso y Seguridad con Monitoreo Ambiental
-**Curso:** Arquitectura Computacional  
-**Facultad:** Ingeniería Electrónica y Telecomunicaciones  
-**Universidad:** Universidad del Cauca  
+# PRD — Access Control and Security System with Environmental Monitoring
+**Course:** Arquitectura Computacional
+**Faculty:** Electronic Engineering and Telecommunications
+**University:** Universidad del Cauca
 
 ---
 
-## 1. Descripción General
+## 1. Overview
 
-El proyecto consiste en diseñar e implementar un sistema embebido de control de acceso con cerradura inteligente para una empresa. El sistema gestiona el ingreso de personas mediante clave numérica, administra perfiles y roles de usuario, controla intentos fallidos, activa alarmas ante eventos de seguridad, y monitorea las condiciones ambientales (temperatura, luz, sonido, campo magnético) para garantizar el confort térmico y la seguridad del entorno.
+The project consists of designing and implementing an embedded access control system with a smart lock for a company. The system manages personnel entry via numeric keypad, administers user profiles and roles, controls failed attempts, activates alarms for security events, and monitors environmental conditions (temperature, light, sound, magnetic field) to ensure thermal comfort and environmental safety.
 
-El sistema está implementado sobre el microcontrolador **ATmega2560** y se organiza como una **Máquina de Estados Finitos (FSM)** con 6 estados principales.
+The system is implemented on the **ATmega2560** microcontroller and organized as a **Finite State Machine (FSM)** with 6 main states.
 
 ---
 
-## 2. Objetivos
+## 2. Objectives
 
-- Controlar el acceso físico a la empresa mediante autenticación por clave numérica.
-- Gestionar perfiles de usuario con diferentes niveles de acceso físico según rol.
-- Detectar y responder a eventos de intrusión y accesos no autorizados.
-- Monitorear condiciones ambientales y actuar para mantener el confort.
-- Almacenar usuarios, claves y horarios en EEPROM de forma persistente.
-- Forzar la rotación de claves tras 4 usos, impidiendo la reutilización de claves anteriores.
+- Control physical access to the facility via numeric keypad authentication.
+- Manage user profiles with different physical access levels based on role.
+- Detect and respond to intrusion events and unauthorized access.
+- Monitor environmental conditions and act to maintain comfort.
+- Store users, keys, and schedules persistently in EEPROM.
+- Force key rotation after 4 uses, preventing reuse of previous keys.
 
 ---
 
 ## 3. Hardware
 
-| Componente | Función en el sistema |
+| Component | System Function |
 |---|---|
-| ATmega2560 | Microcontrolador principal |
-| LCD Keypad Shield | Visualización de estado y entrada de clave numérica (reemplaza RFID) |
-| Servo Motor | Simula el mecanismo de cerradura (abre/cierra la puerta) |
-| Buzzer | Alarma sonora ante intentos excesivos o intrusión |
-| LED | Indicador visual de estado (rojo parpadeante según modo) |
-| Sound Sensor KY-037 | Detección de sonido/intrusión por micrófono |
-| Analog Hall Sensor KY-035 | Monitoreo del estado de la puerta (abierta/cerrada) |
-| Analog Temperature Sensor KY-013 | Lectura de temperatura ambiente |
-| Photoresistor Module KY-018 | Lectura de nivel de luz ambiental |
-| Potenciómetro | Ajuste de contraste del LCD |
-| EEPROM (interna ATmega2560) | Almacenamiento persistente de usuarios, claves, roles y horarios |
+| ATmega2560 | Main microcontroller |
+| LCD Keypad Shield | Status display and numeric keypad input (replaces RFID) |
+| Servo Motor | Simulates lock mechanism (opens/closes door) |
+| Buzzer | Audible alarm for excessive attempts or intrusion |
+| LED | Visual status indicator (red flashing per mode) |
+| Sound Sensor KY-037 | Sound/intrusion detection via microphone |
+| Analog Hall Sensor KY-035 | Door status monitoring (open/closed) |
+| Analog Temperature Sensor KY-013 | Ambient temperature reading |
+| Photoresistor Module KY-018 | Ambient light level reading |
+| Potentiometer | LCD contrast adjustment |
+| EEPROM (internal ATmega2560) | Persistent storage for users, keys, roles, and schedules |
 
-> **Nota:** El módulo RFID presente en el diagrama FSM fue reemplazado por el teclado del LCD Keypad Shield como método de autenticación.
-
----
-
-## 4. Software y Librerías
-
-- **Lenguaje:** C/C++ (Arduino framework sobre ATmega2560)
-- **Average Library:** Cálculo de promedios sobre lecturas de sensores analógicos (temperatura, luz) para suavizar valores y evitar lecturas ruidosas.
-- **EEPROM.h:** Lectura y escritura persistente de usuarios, contraseñas y horarios.
-- **Servo.h:** Control del servo motor para el mecanismo de cerradura.
-- **LiquidCrystal.h:** Control del LCD Keypad Shield.
+> **Note:** The RFID module present in the original FSM diagram was replaced by the LCD Keypad Shield's keypad as the authentication method.
 
 ---
 
-## 5. Máquina de Estados Finitos (FSM)
+## 4. Software and Libraries
 
-El sistema opera con **6 estados** y las siguientes transiciones:
+- **Language:** C/C++ (Arduino framework on ATmega2560)
+- **Average Library:** Running average calculation for analog sensor readings (temperature, light) to smooth values and avoid noisy readings.
+- **EEPROM.h:** Persistent read/write of users, passwords, and schedules.
+- **Servo.h:** Servo motor control for the lock mechanism.
+- **LiquidCrystal.h:** LCD Keypad Shield control.
 
-### 5.1 Estados
+---
 
-| # | Estado | Descripción |
+## 5. Finite State Machine (FSM)
+
+The system operates with **6 states** and the following transitions:
+
+### 5.1 States
+
+| # | State | Description |
 |---|---|---|
-| 1 | **INICIO** | Estado inicial. Espera ingreso de clave por teclado. Muestra prompt en LCD. |
-| 2 | **CONFIG** | Clave correcta. Valida rol, horario y perfil. Activa servo (cerradura abierta por tiempo programado). Retorna automáticamente a INICIO. |
-| 3 | **BLOQUEO** | Se activa tras 3 intentos fallidos. Sistema bloqueado temporalmente (5 s). LED rojo ON=300 ms / OFF=700 ms. |
-| 4 | **MONITOR INTRUSOS** | Monitorea micrófono (KY-037) y sensor Hall (KY-035). Detecta apertura de puerta sin autorización o sonido sospechoso. |
-| 5 | **MONITOR AMBIENTAL** | Monitorea temperatura (KY-013) y luz (KY-018). Actúa si temperatura < 20°C o luz < 100. |
-| 6 | **ALARMA** | Se activa ante intrusión o 3 alarmas consecutivas en menos de 12 s. Buzzer ON. LED rojo ON=100 ms / OFF=500 ms. Duración configurable. |
+| 1 | **INICIO** | Initial state. Waits for keypad PIN entry. Shows prompt on LCD. |
+| 2 | **CONFIG** | Correct PIN. Validates role, schedule, and profile. Activates servo (lock open for programmed time). Automatically returns to INICIO. |
+| 3 | **BLOQUEO** | Activated after 3 failed attempts. System temporarily blocked (5 s). Red LED ON=300 ms / OFF=700 ms. |
+| 4 | **MONITOR INTRUSOS** | Monitors microphone (KY-037) and Hall sensor (KY-035). Detects door opening without authorization or suspicious sound. |
+| 5 | **MONITOR AMBIENTAL** | Monitors temperature (KY-013) and light (KY-018). Acts if temperature < 20°C or light < 100. |
+| 6 | **ALARMA** | Activated on intrusion or 3 consecutive alarms in less than 12 s. Buzzer ON. Red LED ON=100 ms / OFF=500 ms. Configurable duration. |
 
-### 5.2 Transiciones principales
+### 5.2 Main Transitions
 
-| Desde | Condición | Hacia |
+| From | Condition | To |
 |---|---|---|
-| INICIO | Clave correcta + rol/horario válido | CONFIG |
-| INICIO | Clave incorrecta (< 3 intentos) | INICIO (incrementa contador) |
-| INICIO | 3 intentos fallidos | BLOQUEO |
-| INICIO | Letra `#` / `*` | Acciones de menú (cambio de clave, gestión) |
-| CONFIG | Tiempo de desbloqueo expirado (2 s) | INICIO |
-| BLOQUEO | Tiempo de bloqueo expirado (5 s) | INICIO |
-| MONITOR INTRUSOS | Intrusión detectada (puerta/micrófono) | ALARMA |
-| MONITOR INTRUSOS | 3 veces sin evento | INICIO |
-| MONITOR AMBIENTAL | Temp < 20°C o Luz < 100 | Acción de confort (actuador) |
-| MONITOR AMBIENTAL | Tiempo expirado (4 s) | INICIO |
-| ALARMA | 3 alarmas consecutivas < 12 s | Sistema bloqueado (BLOQUEO extendido) |
-| ALARMA | Tiempo de alarma expirado (2 s) | INICIO |
+| INICIO | Correct PIN + valid role/schedule | CONFIG |
+| INICIO | Wrong PIN (< 3 attempts) | INICIO (increments counter) |
+| INICIO | 3 failed attempts | BLOQUEO |
+| INICIO | `#` / `*` key | Menu actions (PIN change, management) |
+| CONFIG | Unlock time expired (2 s) | INICIO |
+| BLOQUEO | Block time expired (5 s) | INICIO |
+| MONITOR INTRUSOS | Intrusion detected (door/microphone) | ALARMA |
+| MONITOR INTRUSOS | 3 times without event | INICIO |
+| MONITOR AMBIENTAL | Temp < 20°C or Light < 100 | Comfort action (actuator) |
+| MONITOR AMBIENTAL | Time expired (4 s) | INICIO |
+| ALARMA | 3 consecutive alarms < 12 s | System blocked (extended BLOQUEO) |
+| ALARMA | Alarm time expired (2 s) | INICIO |
 
-### 5.3 Temporización de LEDs y Buzzer
+### 5.3 LED and Buzzer Timing
 
-| Estado | LED Rojo | Buzzer |
+| State | Red LED | Buzzer |
 |---|---|---|
 | BLOQUEO | ON=300 ms, OFF=700 ms | OFF |
-| ALARMA | ON=100 ms, OFF=500 ms | ON (continuo) |
+| ALARMA | ON=100 ms, OFF=500 ms | ON (continuous) |
 
 ---
 
-## 6. Gestión de Usuarios y Roles
+## 6. User and Role Management
 
-### 6.1 Roles y niveles de acceso físico
+### 6.1 Roles and Physical Access Levels
 
-| Rol | Nivel | Acceso físico |
+| Role | Level | Physical Access |
 |---|---|---|
-| Seguridad | 1 | Acceso a zonas de vigilancia y entrada principal |
-| Operario | 2 | Acceso a zonas de producción/trabajo |
-| Coordinador | 3 | Acceso a zonas operativas + salas de reunión |
-| Gerente | 4 | Acceso total a todas las áreas |
+| Security | 1 | Access to surveillance zones and main entrance |
+| Operator | 2 | Access to production/work zones |
+| Coordinator | 3 | Access to operational zones + meeting rooms |
+| Manager | 4 | Full access to all areas |
 
-> Los diferentes roles habilitan el servo (cerradura) para diferentes zonas físicas del sistema.
+> Different roles enable the servo (lock) for different physical zones of the system.
 
-### 6.2 Políticas de contraseña
+### 6.2 Password Policy
 
-- Clave numérica de **mínimo 4 dígitos**.
-- Cada clave expira tras **4 usos**; el sistema obliga al usuario a cambiarla.
-- La nueva clave **no puede ser igual** a ninguna de las claves anteriores (historial almacenado en EEPROM).
-- El cambio de clave se gestiona desde el menú accesible con las teclas `#` / `*` del LCD Keypad.
+- Numeric key of **minimum 4 digits**.
+- Each key expires after **4 uses**; the system forces the user to change it.
+- The new key **cannot be the same** as any previous key (history stored in EEPROM).
+- Key change is managed through the menu accessible via the `#` / `*` keys on the LCD Keypad.
 
-### 6.3 Franjas horarias
+### 6.3 Time Schedules
 
-- Las franjas horarias de acceso permitido por rol están **definidas en el código (hardcoded)**.
-- Si un usuario intenta acceder fuera de su franja horaria, el acceso es denegado aunque la clave sea correcta.
+- Allowed access time slots per role are **defined in code (hardcoded)**.
+- If a user attempts access outside their time window, access is denied even if the key is correct.
 
-### 6.4 Almacenamiento en EEPROM
+### 6.4 EEPROM Storage
 
-- Usuarios, claves (con historial), roles y franjas horarias se guardan en la EEPROM interna del ATmega2560.
-- La cantidad exacta de usuarios almacenables **está por definir** según el mapa de memoria EEPROM disponible (4 KB en ATmega2560).
+- Users, keys (with history), roles, and time schedules are stored in the internal EEPROM of the ATmega2560.
+- The exact number of storable users **depends on the EEPROM memory map** (4 KB on ATmega2560).
 
 ---
 
-## 7. Monitoreo Ambiental
+## 7. Environmental Monitoring
 
-El estado **MONITOR AMBIENTAL** usa la **Average Library** para promediar lecturas de los sensores y evitar falsas activaciones por ruido eléctrico.
+The **MONITOR AMBIENTAL** state uses the **RunningAverage Library** to average sensor readings and avoid false activations due to electrical noise.
 
-| Variable | Sensor | Umbral de acción |
+| Variable | Sensor | Action Threshold |
 |---|---|---|
-| Temperatura | KY-013 | < 20°C → activar calefacción/ventilación |
-| Luz | KY-018 | < 100 (unidades ADC) → activar iluminación |
-| Sonido | KY-037 | Umbral configurable → detección de intrusión |
-| Campo magnético (puerta) | KY-035 | Cambio de estado → puerta abierta sin autorización |
+| Temperature | KY-013 | < 20°C → activate heating/ventilation |
+| Light | KY-018 | < 100 (ADC units) → activate lighting |
+| Sound | KY-037 | Configurable threshold → intrusion detection |
+| Magnetic field (door) | KY-035 | State change → door opened without authorization |
 
-> El número de personas presentes puede influir en los umbrales de confort térmico (a definir en implementación).
+> The number of people present may influence thermal comfort thresholds (to be defined during implementation).
 
 ---
 
-## 8. Visualización
+## 8. Display
 
-La información del sistema se muestra de forma simultánea en **dos canales**:
+System information is displayed simultaneously on **two channels**:
 
 ### 8.1 LCD Keypad Shield (16x2)
 
-| Línea | Contenido |
+| Line | Content |
 |---|---|
-| Línea 1 | Estado del sistema: `IDLE`, `OPEN`, `ERR`, `ALR`, `BLK` |
-| Línea 2 | Dígitos ingresados (enmascarados: `****`), conteo regresivo, mensajes de error, datos ambientales |
+| Line 1 | System status: `IDLE`, `OPEN`, `ERR`, `ALR`, `BLK` |
+| Line 2 | Entered digits (masked: `****`), countdown, error messages, environmental data |
 
-El contraste del LCD se ajusta mediante el **potenciómetro**.
+LCD contrast is adjusted via the **potentiometer**.
 
-### 8.2 Monitor Serial (Serial.print)
+### 8.2 Serial Monitor (Serial.print)
 
-- Log completo de eventos: intentos de acceso, cambios de estado, lecturas de sensores, alertas.
-- Útil para depuración y verificación durante el desarrollo.
+- Complete event log: access attempts, state changes, sensor readings, alerts.
+- Useful for debugging and verification during development.
 
 ---
 
-## 9. Requisitos Funcionales
+## 9. Functional Requirements
 
-| ID | Requisito |
+| ID | Requirement |
 |---|---|
-| RF-01 | El sistema acepta claves numéricas de mínimo 4 dígitos vía LCD Keypad. |
-| RF-02 | El sistema valida la clave contra el valor almacenado en EEPROM. |
-| RF-03 | Permite máximo 3 intentos fallidos antes de activar BLOQUEO. |
-| RF-04 | Activa alarma sonora (buzzer) y visual (LED rojo rápido) ante intrusión o bloqueo. |
-| RF-05 | El servo motor desbloquea la cerradura por un tiempo programado (2 s) y retorna al estado INICIO. |
-| RF-06 | El sistema retorna automáticamente al estado INICIO tras cualquier acción completada. |
-| RF-07 | Las franjas horarias de acceso están definidas por rol en el código. |
-| RF-08 | El sensor Hall (KY-035) monitorea el estado físico de la puerta. |
-| RF-09 | El sistema gestiona altas de usuarios y asignación de roles almacenados en EEPROM. |
-| RF-10 | Las claves se renuevan obligatoriamente cada 4 usos; no se permite reutilización. |
-| RF-11 | El sensor de sonido (KY-037) detecta eventos de intrusión por ruido. |
-| RF-12 | Los sensores KY-013 y KY-018 monitorean temperatura y luz con promediado (Average Library). |
-| RF-13 | El LCD muestra estado, dígitos enmascarados, conteo regresivo e información ambiental. |
-| RF-14 | El monitor serial registra todos los eventos del sistema. |
-| RF-15 | 3 alarmas consecutivas en menos de 12 s activan bloqueo extendido del sistema. |
-| RF-16 | Los roles definen diferentes niveles de acceso físico a zonas de la empresa. |
+| RF-01 | The system accepts numeric keys of minimum 4 digits via LCD Keypad. |
+| RF-02 | The system validates the key against the value stored in EEPROM. |
+| RF-03 | Allows maximum 3 failed attempts before activating BLOQUEO. |
+| RF-04 | Activates audible alarm (buzzer) and visual (fast red LED) on intrusion or block. |
+| RF-05 | The servo motor unlocks the lock for a programmed time (2 s) and returns to INICIO state. |
+| RF-06 | The system automatically returns to INICIO state after any completed action. |
+| RF-07 | Access time windows are defined per role in code. |
+| RF-08 | The Hall sensor (KY-035) monitors the physical door status. |
+| RF-09 | The system manages user registration and role assignment stored in EEPROM. |
+| RF-10 | Keys are forcibly renewed every 4 uses; no reuse allowed. |
+| RF-11 | The sound sensor (KY-037) detects intrusion events via noise. |
+| RF-12 | Sensors KY-013 and KY-018 monitor temperature and light with averaging (RunningAverage Library). |
+| RF-13 | The LCD shows status, masked digits, countdown, and environmental information. |
+| RF-14 | The serial monitor logs all system events. |
+| RF-15 | 3 consecutive alarms in less than 12 s activate extended system block. |
+| RF-16 | Roles define different physical access levels to company zones. |
 
 ---
 
-## 10. Requisitos No Funcionales
+## 10. Non-Functional Requirements
 
-| ID | Requisito |
+| ID | Requirement |
 |---|---|
-| RNF-01 | El sistema debe responder a la entrada del teclado en menos de 200 ms. |
-| RNF-02 | El código debe estar modularizado por estados del FSM. |
-| RNF-03 | El código debe estar documentado con comentarios en cada función. |
-| RNF-04 | La EEPROM no debe escribirse innecesariamente para preservar su vida útil. |
-| RNF-05 | El sistema debe ser robusto ante lecturas ruidosas de sensores analógicos (uso de Average Library). |
+| NFR-01 | The system must respond to keypad input within 200 ms. |
+| NFR-02 | Code must be modularized by FSM states. |
+| NFR-03 | Code must be documented with comments in each function. |
+| NFR-04 | EEPROM must not be written unnecessarily to preserve its lifespan. |
+| NFR-05 | The system must be robust against noisy analog sensor readings (use RunningAverage Library). |
 
 ---
 
-## 11. Entregables
+## 11. Deliverables
 
-| Entregable | Descripción |
+| Deliverable | Description |
 |---|---|
-| Prototipo físico funcional | Hardware ensamblado y operativo sobre ATmega2560 |
-| Código fuente documentado | Código C/C++ modular con comentarios, entregado según formato del curso |
-| Informe escrito | Documento según formato provisto por el docente (pendiente de adjuntar) |
+| Functional physical prototype | Assembled and operational hardware on ATmega2560 |
+| Documented source code | Modular C/C++ code with comments, delivered per course format |
+| Written report | Document per instructor-provided format (pending attachment) |
 
 ---
 
-## 12. Aspectos Pendientes de Definición
+## 12. Pending Items
 
-- Número máximo de usuarios almacenables en EEPROM (depende del mapa de memoria).
-- Franjas horarias específicas por rol (valores exactos a hardcodear).
-- Umbral exacto de sonido para detección de intrusión (KY-037).
-- Número de personas que modifica los umbrales de confort ambiental.
-- Formato de informe (pendiente de entrega por parte del docente).
+- Maximum number of storable users in EEPROM (depends on memory map).
+- Specific time windows per role (exact values to hardcode).
+- Exact sound threshold for intrusion detection (KY-037).
+- Number of people that modifies environmental comfort thresholds.
+- Report format (pending delivery by instructor).

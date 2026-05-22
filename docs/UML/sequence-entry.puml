@@ -1,7 +1,7 @@
-@startuml IngresoExitoso
+@startuml SuccessfulEntry
 ' ====================================================================
 ' Sequence diagram - Successful PIN entry
-' Happy path: correct PIN + role in window -> CONFIG -> unlock 2s -> INICIO
+' Happy path: correct PIN + role in window -> CONFIG -> unlock 2s -> IDLE
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -18,9 +18,9 @@ participant "LCD\n16x2" as LCD #D4E6F1
 participant "NTC\nA1" as NTC #D5F5E3
 participant "LDR\nA2" as LDR #D5F5E3
 
-== INICIO - idle, waiting ==
+== IDLE - waiting ==
 SYS -> FSM: Update()
-note right: State S_INICIO\nLCD: "IDLE"\n"Enter PIN:"
+note right: State S_IDLE\nLCD: "IDLE"\n"Enter PIN:"
 
 USR -> KPD: Presses '1','2','3','4'
 KPD -> SYS: getKey() = digits
@@ -37,26 +37,26 @@ SYS -> SYS: uses++, saveUser()
 note right: access GRANTED
 
 SYS -> FSM: trig = TRIG_AUTH_OK
-FSM -> SYS: Transition to S_CONFIG
-SYS -> SYS: onEnterConfig()
+FSM -> SYS: Transition to S_OPEN
+SYS -> SYS: onEnterOpen()
 SYS -> SRV: write(SRV_UNLOCKED) 90 deg
 note right: Door unlocked\n2 seconds
 SYS -> LCD: "ACCESS GRANTED"\n"OPEN 2s"
 
-== CONFIG - unlock countdown ==
+== UNLOCKED - countdown ==
 loop each loop iteration
   SYS -> SYS: updateState() - check timer
   note right: elapsed >= 2000ms?
 end
 
 FSM -> SYS: trig = TRIG_AUTH_OK (timer)
-FSM -> SYS: Transition to S_INICIO
-SYS -> SYS: onLeaveConfig()
+FSM -> SYS: Transition to S_IDLE
+SYS -> SYS: onLeaveOpen()
 SYS -> SRV: write(SRV_LOCKED) 0 deg
-SYS -> SYS: onEnterInicio()
+SYS -> SYS: onEnterIdle()
 note right: System back to idle
 
-== INICIO - cycle complete ==
+== IDLE - cycle complete ==
 LCD -> SYS: "IDLE"\n"Enter PIN:"
 note right: Ready for next access
 

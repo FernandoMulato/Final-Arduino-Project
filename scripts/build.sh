@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ===============================================================
-#  Script de compilacion para Arduino-Project (PlatformIO)
-#  Arquitectura Computacional — Control de Acceso y Seguridad
+#  Build script for Arduino-Project (PlatformIO)
+#  Arquitectura Computacional — Access Control and Security
 # ===============================================================
 set -euo pipefail
 
@@ -11,14 +11,14 @@ VERBOSE=""
 
 cd "$PROJECT_DIR"
 
-# ---- Parsear flags ----
+# ---- Parse flags ----
 for arg in "$@"; do
     case "$arg" in
         -v|--verbose) VERBOSE="-v" ;;
     esac
 done
 
-# ---- Detectar comando (primer arg no-flag) ----
+# ---- Detect command (first non-flag arg) ----
 CMD="build"
 for arg in "$@"; do
     case "$arg" in
@@ -28,70 +28,70 @@ for arg in "$@"; do
 done
 
 if [ ! -x "$PIO" ]; then
-    echo "PlatformIO no esta instalado. Corre:"
+    echo "PlatformIO is not installed. Run:"
     echo "  pip install platformio"
     exit 1
 fi
 
 case "$CMD" in
     build)
-        echo "=== Compilando ==="
+        echo "=== Compiling ==="
         "$PIO" run $VERBOSE
         ;;
     upload)
-        echo "=== Compilando y subiendo a la placa ==="
+        echo "=== Compiling and uploading to board ==="
         "$PIO" run --target upload $VERBOSE
         ;;
     run)
-        echo "=== Subiendo y abriendo monitor serie ==="
+        echo "=== Uploading and opening serial monitor ==="
         "$PIO" run --target upload $VERBOSE
         echo ""
-        echo "=== Monitor serie (9600 baud) ==="
+        echo "=== Serial monitor (9600 baud) ==="
         "$PIO" device monitor --baud 9600
         ;;
     monitor)
-        echo "=== Monitor serie (9600 baud) ==="
-        echo "  (Ctrl+C para salir)"
+        echo "=== Serial monitor (9600 baud) ==="
+        echo "  (Ctrl+C to exit)"
         "$PIO" device monitor --baud 9600
         ;;
     clean)
-        echo "=== Limpiando build ==="
+        echo "=== Cleaning build ==="
         "$PIO" run --target clean $VERBOSE
         rm -f compile_commands.json
         ;;
     compiledb)
-        echo "=== Regenerando compile_commands.json para el LSP ==="
+        echo "=== Regenerating compile_commands.json for LSP ==="
         "$PIO" run --target compiledb $VERBOSE
         ;;
     deps)
-        echo "=== Instalando/actualizando dependencias ==="
+        echo "=== Installing/updating dependencies ==="
         "$PIO" pkg install $VERBOSE
         ;;
     size)
-        echo "=== Tamano del firmware ==="
+        echo "=== Firmware size ==="
         "$PIO" run --target size $VERBOSE
         ;;
     full)
-        echo "=== Limpieza total + dependencias + compilacion ==="
+        echo "=== Full clean + deps + build ==="
         "$PIO" run --target clean
         "$PIO" pkg install $VERBOSE
         "$PIO" run $VERBOSE
         ;;
     *)
-        echo "Uso: $0 [comando] [-v|--verbose]"
+        echo "Usage: $0 [command] [-v|--verbose]"
         echo ""
-        echo "Comandos:"
-        echo "  build      Compilar el firmware (default)"
-        echo "  upload     Compilar y subir a la placa"
-        echo "  run        Subir y abrir monitor serie"
-        echo "  monitor    Abrir monitor serie (9600 baud)"
-        echo "  clean      Limpiar archivos de compilacion"
-        echo "  compiledb  Regenerar compile_commands.json"
-        echo "  deps       Instalar/actualizar dependencias"
-        echo "  size       Mostrar tamano del firmware"
+        echo "Commands:"
+        echo "  build      Compile firmware (default)"
+        echo "  upload     Compile and upload to board"
+        echo "  run        Upload and open serial monitor"
+        echo "  monitor    Open serial monitor (9600 baud)"
+        echo "  clean      Clean build files"
+        echo "  compiledb  Regenerate compile_commands.json"
+        echo "  deps       Install/update dependencies"
+        echo "  size       Show firmware size"
         echo "  full       clean + deps + build"
         echo ""
         echo "Flags:"
-        echo "  -v, --verbose  Salida detallada de PlatformIO"
+        echo "  -v, --verbose  Verbose PlatformIO output"
         ;;
 esac

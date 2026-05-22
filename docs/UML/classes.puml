@@ -1,4 +1,4 @@
-@startuml Clases
+@startuml Classes
 ' ====================================================================
 ' Class diagram - Access Control and Security System
 ' Arquitectura Computacional - Arduino Mega (ATmega2560)
@@ -20,8 +20,8 @@ package "Data" as dataPkg #F0F0F0 {
     {field} history[4][4]: char
   }
   note right of User
-    role: 1=Seguridad, 2=Operario
-    3=Coordinador, 4=Gerente
+    role: 1=Security, 2=Operator
+    3=Coordinator, 4=Manager
     uses: max 4 before PIN rotation
     history: last 4 PINs (circular)
   end note
@@ -30,12 +30,12 @@ package "Data" as dataPkg #F0F0F0 {
 ' === STATE MACHINE ===
 package "State Machine" as fsmPkg #F0F0F0 {
   enum State #B3D9FF;line:Black {
-    S_INICIO
-    S_CONFIG
-    S_BLOQUEO
-    S_MONITOR_INTRUSOS
-    S_MONITOR_AMBIENTAL
-    S_ALARMA
+    S_IDLE
+    S_OPEN
+    S_BLOCKED
+    S_INTRUSION_MONITOR
+    S_ENV_MONITOR
+    S_ALARM
   }
 
   enum Trigger #B3D9FF;line:Black {
@@ -54,7 +54,7 @@ package "State Machine" as fsmPkg #F0F0F0 {
   }
   note right of StateMachine
     StateMachineLib v1.0.0
-    6 states, 9 transitions
+    6 states, 10 transitions
   end note
 }
 
@@ -174,15 +174,15 @@ package "Actuators" as actPkg #F0F0F0 {
   }
   note right of RedLED
     Pin D10
-    BLOQUEO: 300/700ms
-    ALARMA: 100/500ms
+    BLOCK: 300/700ms
+    ALARM: 100/500ms
   end note
 
   class Buzzer #FADBD8;line:Black {
     {method} +on(): void
     {method} +off(): void
   }
-  note right of Buzzer: Pin D11 - Piezo, ON in ALARMA
+  note right of Buzzer: Pin D11 - Piezo, ON in ALARM
 }
 
 ' === CONTROLLER ===
