@@ -1,84 +1,71 @@
 @startuml Clases
 ' ====================================================================
-' Diagrama de clases - Control de Acceso y Seguridad
+' Class diagram - Access Control and Security System
 ' Arquitectura Computacional - Arduino Mega (ATmega2560)
+' 6-state FSM with AsyncTaskLib, Servo, LiquidCrystal, RunningAverage
 ' ====================================================================
 
 skinparam classAttributeIconSize 0
 skinparam defaultFontName SansSerif
 skinparam backgroundColor white
 
-' === ESTRUCTURAS DE DATOS ===
-package "Datos" as dataPkg #F0F0F0 {
-  struct Usuario #FFFACD;line:Black {
+' === DATA STRUCTURES ===
+package "Data" as dataPkg #F0F0F0 {
+  struct User #FFFACD;line:Black {
     {field} pin[5]: char
-    {field} rol: uint8_t
-    {field} usos: uint8_t
-    {field} activo: bool
+    {field} role: uint8_t
+    {field} uses: uint8_t
+    {field} active: bool
+    {field} histIdx: uint8_t
+    {field} history[4][4]: char
   }
-  note right of Usuario
-    rol: 0=seguridad, 1=operario
-    2=coordinador, 3=gerente
-    usos: max 4 antes de rotar PIN
+  note right of User
+    role: 1=Seguridad, 2=Operario
+    3=Coordinador, 4=Gerente
+    uses: max 4 before PIN rotation
+    history: last 4 PINs (circular)
   end note
-
-  struct Horario #FFFACD;line:Black {
-    {field} indiceUsuario: uint8_t
-    {field} horaInicio: uint8_t
-    {field} minInicio: uint8_t
-    {field} horaFin: uint8_t
-    {field} minFin: uint8_t
-    {field} dias: uint8_t
-    {field} activo: bool
-  }
 }
 
-' === MAQUINA DE ESTADOS ===
-package "Maquina de Estados" as fsmPkg #F0F0F0 {
-  enum Estado #B3D9FF;line:Black {
-    E_INICIO
-    E_BOTON
-    E_CLAVE_CORRECTA
-    E_CONFIG
-    E_TIEMPO_2_SEC
-    E_MONITOR_AMBIENTAL
-    E_SISTEMA_BLOQUEADO
-    E_BLOQUEO
-    E_ALARMA
-    E_MONITOR_INTRUSOS
+' === STATE MACHINE ===
+package "State Machine" as fsmPkg #F0F0F0 {
+  enum State #B3D9FF;line:Black {
+    S_INICIO
+    S_CONFIG
+    S_BLOQUEO
+    S_MONITOR_INTRUSOS
+    S_MONITOR_AMBIENTAL
+    S_ALARMA
   }
 
   enum Trigger #B3D9FF;line:Black {
-    TRIG_CONFIG
-    TRIG_PIN_OK
+    TRIG_AUTH_OK
     TRIG_LOCKOUT
-    TRIG_CANCEL
-    TRIG_SALIR_CONFIG
-    TRIG_ALARMA
+    TRIG_ENV_ALARM
     TRIG_INTRUSION
   }
 
   class StateMachine #E8E8E8;line:Black {
-    {method} +SetOnEntering(estado, callback): void
-    {method} +SetOnLeaving(estado, callback): void
-    {method} +AddTransition(origen, destino, guard): void
-    {method} +SetState(estado, bool, bool): void
+    {method} +SetOnEntering(state, callback): void
+    {method} +SetOnLeaving(state, callback): void
+    {method} +AddTransition(from, to, guard): void
+    {method} +SetState(state, bool, bool): void
     {method} +Update(): void
   }
   note right of StateMachine
     StateMachineLib v1.0.0
-    10 estados, 18 transiciones
+    6 states, 9 transitions
   end note
 }
 
-' === PERIFERICOS ===
-package "Perifericos" as perifPkg #F0F0F0 {
+' === PERIPHERALS ===
+package "Peripherals" as perifPkg #F0F0F0 {
   class Keypad #D4E6F1;line:Black {
     {method} +getKey(): char
   }
   note right of Keypad
-    Libreria Keypad 3.1.1
-    Matriz 4x4 en D2-D9
+    Keypad 3.1.1 library
+    4x4 matrix on D2-D9
     Map: 1-3A, 4-6B, 7-9C, *0#D
   end note
 
@@ -88,128 +75,164 @@ package "Perifericos" as perifPkg #F0F0F0 {
     {method} +update(addr, val): void
   }
   note left of EEPROM
+    4KB on ATmega2560
     Layout:
     0: Magic 0xA5
-    1: Cant usuarios
-    2-81: Usuarios (10x8 bytes)
-    82: Cant horarios
-    83-146: Horarios (8x8 bytes)
-    200: PIN maestro
+    1: User count
+    2+: Users (10 x 24 bytes)
+    Each user: PIN[4]+role+uses
+    +active+histIdx+history[16]
+  end note
+
+  class LiquidCrystal #D4E6F1;line:Black {
+    {method} +begin(cols, rows): void
+    {method} +print(text): void
+    {method} +setCursor(col, row): void
+    {method} +clear(): void
+  }
+  note right of LiquidCrystal
+    LCD Keypad Shield (16x2)
+    Parallel 4-bit mode
+    RS=D22, EN=D23, D4-D7=D24-D27
+    Status codes: IDLE, OPEN
+    ERR, ALR, BLK
+  end note
+
+  class AsyncTask #D4E6F1;line:Black {
+    {field} Interval: unsigned long
+    {field} AutoReset: bool
+    {field} OnFinish: callback
+    {method} +Start(): void
+    {method} +Stop(): void
+    {method} +Reset(): void
+    {method} +Update(): bool
+  }
+  note right of AsyncTask
+    AsyncTaskLib 1.0.0
+    Sensor averaging: 200ms
+    Periodic sensor reads
+    Non-blocking timing
   end note
 }
 
-' === SENSORES ===
-package "Sensores" as sensPkg #F0F0F0 {
+' === SENSORS ===
+package "Sensors" as sensPkg #F0F0F0 {
   class SensorNTC #D5F5E3;line:Black {
-    {field} R1, C1, C2, C3: float
-    {method} +leer(): float
-    {method} +fueraDeRango(): bool
+    {field} runningAvg: RunningAverage
+    {method} +read(): float
   }
   note right of SensorNTC
     Pin A1
-    Formula Steinhart-Hart
-    Umbral: <20 C o >50 C
+    Steinhart-Hart equation
+    Averaged via RunningAverage
+    Threshold: <20 C or >50 C
   end note
 
   class SensorLDR #D5F5E3;line:Black {
-    {method} +leer(): int
-    {method} +oscuridad(): bool
+    {field} runningAvg: RunningAverage
+    {method} +read(): int
   }
   note right of SensorLDR
     Pin A2
-    Umbral: ADC < 100
+    Averaged via RunningAverage
+    Threshold: ADC < 100
   end note
 
   class SensorHall #D5F5E3;line:Black {
-    {method} +leer(): int
-    {method} +puertaAbierta(): bool
+    {method} +read(): int
   }
   note right of SensorHall
-    Pin A3
-    Umbral: ADC > 512
+    Pin A3 - door magnetic sensor
+    Threshold: ADC > 512
   end note
 
-  class Microfono #D5F5E3;line:Black {
-    {method} +leer(): int
-    {method} +sonidoDetectado(): bool
+  class Microphone #D5F5E3;line:Black {
+    {method} +read(): int
   }
-  note right of Microfono
-    Pin A0
-    Umbral: ADC > 800
+  note right of Microphone
+    Pin A0 - KY-037
+    Threshold: ADC > 800
   end note
 }
 
-' === ACTUADORES ===
-package "Actuadores" as actPkg #F0F0F0 {
-  class Relay #FADBD8;line:Black {
-    {method} +encender(): void
-    {method} +apagar(): void
+' === ACTUATORS ===
+package "Actuators" as actPkg #F0F0F0 {
+  class Servo #FADBD8;line:Black {
+    {method} +attach(pin): void
+    {method} +write(angle): void
   }
-  note right of Relay: Pin D12 - Cerradura
+  note right of Servo
+    Pin D12 (PWM)
+    Locked: 0 degrees
+    Unlocked: 90 degrees
+    Duration: 2s (T_UNLOCK)
+  end note
 
-  class LEDRojo #FADBD8;line:Black {
-    {method} +encender(): void
-    {method} +apagar(): void
+  class RedLED #FADBD8;line:Black {
+    {method} +on(): void
+    {method} +off(): void
   }
-  note right of LEDRojo: Pin D10 - PWM
+  note right of RedLED
+    Pin D10
+    BLOQUEO: 300/700ms
+    ALARMA: 100/500ms
+  end note
 
   class Buzzer #FADBD8;line:Black {
-    {method} +encender(): void
-    {method} +apagar(): void
+    {method} +on(): void
+    {method} +off(): void
   }
-  note right of Buzzer: Pin D11 - Piezo
-
-  class LEDBuildIn #FADBD8;line:Black {
-    {method} +encender(): void
-    {method} +apagar(): void
-  }
-  note right of LEDBuildIn: Pin D13
+  note right of Buzzer: Pin D11 - Piezo, ON in ALARMA
 }
 
-' === SISTEMA (controlador central) ===
-package "Controlador" as sysPkg #F0F0F0 {
-  class Sistema #FFCCCC;line:Black {
-    {field} estadoActual: Estado
-    {field} triggerTransicion: Trigger
-    {field} bufferPIN[5]: char
-    {field} intentosFallidos: uint8_t
-    {field} pinMaestro[5]: char
-    {field} nivelConfig: uint8_t
+' === CONTROLLER ===
+package "Controller" as sysPkg #F0F0F0 {
+  class System #FFCCCC;line:Black {
+    {field} currentState: State
+    {field} trigger: Trigger
+    {field} pinBuf[7]: char
+    {field} failCount: uint8_t
+    {field} temperature: float
+    {field} lightLevel: int
+    {field} alarmCount: uint8_t
     ..
-    {method} +configurarFSM(): void
-    {method} +procesarEntrada(): void
-    {method} +actualizarEstado(): void
-    {method} +mostrarInfoEstado(): void
-    {method} +validarPIN(pin): bool
-    {method} +menuConfig(tecla): void
+    {method} +setupFSM(): void
+    {method} +processInput(): void
+    {method} +updateState(): void
+    {method} +updateDisplay(): void
+    {method} +validateAccess(pin): bool
+    {method} +findUserByPin(pin): uint8_t
+    {method} +rotatePin(idx, newPin): void
     {method} +initEEPROM(): void
-    {method} +leerPinMaestro(): void
   }
-  note bottom of Sistema
+  note bottom of System
     Single-file: src/main.ino
-    586 lineas, 0 modulos externos
-    F() macro para strings en PROGMEM
-    millis() para timing no bloqueante
+    ~560 lines, 0 external modules
+    F() macro for PROGMEM
+    AsyncTaskLib for sensor timing
+    millis() for state timing + blink
   end note
 }
 
-' === RELACIONES ===
-Sistema --> Estado : "usa"
-Sistema --> Trigger : "dispara"
-Sistema --> StateMachine : "controla"
-Sistema --> Keypad : "lee teclas"
-Sistema --> EEPROM : "persiste datos"
-Sistema --> SensorNTC : "lee temp"
-Sistema --> SensorLDR : "lee luz"
-Sistema --> SensorHall : "lee puerta"
-Sistema --> Microfono : "lee sonido"
-Sistema --> Relay : "activa cierre"
-Sistema --> LEDRojo : "activa alarma"
-Sistema --> Buzzer : "activa sirena"
-Sistema --> LEDBuildIn : "status"
-Sistema --> Usuario : "gestiona"
-Sistema --> Horario : "gestiona"
+' === RELATIONSHIPS ===
+System --> State : "uses"
+System --> Trigger : "fires"
+System --> StateMachine : "controls"
+System --> Keypad : "reads keys"
+System --> EEPROM : "persists data"
+System --> LiquidCrystal : "displays status"
+System --> AsyncTask : "schedules reads"
+System --> SensorNTC : "reads temp"
+System --> SensorLDR : "reads light"
+System --> SensorHall : "reads door"
+System --> Microphone : "reads sound"
+System --> Servo : "actuates lock"
+System --> RedLED : "alarm signal"
+System --> Buzzer : "sound alarm"
+System --> User : "manages"
+System --> RunningAverage : "smooths sensors"
 
-Usuario "1" --> "*" Horario : "tiene horarios"
+SensorNTC --> RunningAverage : "uses"
+SensorLDR --> RunningAverage : "uses"
 
 @enduml

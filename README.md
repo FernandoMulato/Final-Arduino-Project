@@ -1,214 +1,206 @@
-# Control de Acceso y Seguridad
+# Access Control and Security System
 
 > **Arquitectura Computacional** — Arduino Mega (ATmega2560)
-> Proyecto académico: sistema de control de acceso con cerradura inteligente,
-> monitoreo ambiental y detección de intrusiones.
+> Academic project: smart lock access control system with
+> environmental monitoring and intrusion detection.
 
 ---
 
-## 📋 Resumen del Sistema
+## System Overview
 
-El sistema implementa una máquina de estados finitos (FSM) de 10 estados que
-gestiona el ingreso mediante teclado numérico 4×4, valida credenciales
-almacenadas en EEPROM, controla un cierre eléctrico, detecta intrusiones
-mediante sensores de puerta y sonido, activa alarmas audiovisuales y monitorea
-condiciones ambientales.
+The system implements a 6-state Finite State Machine (FSM) that manages
+entry via 4x4 numeric keypad, validates credentials stored in EEPROM,
+controls a servo-based door lock, detects intrusion via hall and sound
+sensors, activates audiovisual alarms, and monitors environmental
+conditions (temperature, light) with sensor averaging.
 
-**Especificaciones técnicas:**
+**Technical Specifications:**
 
-| Parámetro | Valor |
+| Parameter | Value |
 |-----------|-------|
-| Microcontrolador | ATmega2560 (Arduino Mega) |
-| Frecuencia | 16 MHz |
-| SRAM | 8 KB (487 B usados — 5.9%) |
-| Flash | 256 KB (13.4 KB usados — 5.2%) |
-| EEPROM | 1 KB (147 B usados — 14.4%) |
-| Lenguaje | C++ (Arduino framework) |
-| Librerías | StateMachineLib, Keypad 3.1.1, EEPROM |
-| Archivos | 1 (`src/main.ino`, 586 líneas) |
+| Microcontroller | ATmega2560 (Arduino Mega) |
+| Frequency | 16 MHz |
+| SRAM | 8 KB (725 B used — 8.9%) |
+| Flash | 248 KB (16.5 KB used — 6.5%) |
+| EEPROM | 4 KB |
+| Language | C++ (Arduino framework) |
+| Libraries | StateMachineLib, AsyncTaskLib, Keypad 3.1.1, Servo, LiquidCrystal, RunningAverage |
+| Files | 1 (`src/main.ino`, ~560 lines) |
 
 ---
 
-## 🏗️ Arquitectura del Sistema
+## System Architecture
 
-### Diagrama de Clases
+### Class Diagram
 
-El siguiente diagrama muestra la estructura completa del sistema: datos,
-máquina de estados, periféricos, sensores, actuadores y el controlador central.
+The following diagram shows the complete system structure: data,
+state machine, peripherals, sensors, actuators, and the central controller.
 
-| Clases del Sistema |
-|--------------------|
-| ![Clases](docs/UML/Clases.png) |
+| System Classes |
+|----------------|
+| ![Classes](docs/UML/Clases.png) |
 
-**Leyenda de paquetes:**
-| Color | Significado |
-|-------|-------------|
-| 🟡 Amarillo `#FFFACD` | Estructuras de datos (Usuario, Horario) |
-| 🔵 Azul `#B3D9FF` | Máquina de estados (Estado, Trigger, StateMachine) |
-| 🔷 Celeste `#D4E6F1` | Periféricos (Keypad, EEPROM) |
-| 🟢 Verde `#D5F5E3` | Sensores (NTC, LDR, Hall, Micrófono) |
-| 🔴 Rosa `#FADBD8` | Actuadores (Relay, LED, Buzzer) |
-| 🟥 Rojo `#FFCCCC` | Controlador central (Sistema) |
+**Package Legend:**
+| Color | Meaning |
+|-------|---------|
+| 🟡 Yellow `#FFFACD` | Data structures (User) |
+| 🔵 Blue `#B3D9FF` | State machine (State, Trigger, StateMachine) |
+| 🔷 Light Blue `#D4E6F1` | Peripherals (Keypad, EEPROM, LiquidCrystal, AsyncTask) |
+| 🟢 Green `#D5F5E3` | Sensors (NTC, LDR, Hall, Microphone) |
+| 🔴 Pink `#FADBD8` | Actuators (Servo, LED, Buzzer) |
+| 🟥 Red `#FFCCCC` | Central controller (System) |
 
 ---
 
-## ⚙️ Máquina de Estados Finitos (FSM)
+## Finite State Machine (FSM)
 
-La FSM es el núcleo arquitectónico del sistema. Implementa 10 estados y
-18 transiciones usando la librería `StateMachineLib`.
+The FSM is the architectural core. It implements **6 states** with
+**9 transitions** using `StateMachineLib`.
 
-### Estados
+### States
 
-| # | Estado | Descripción | Timing |
-|---|--------|-------------|--------|
-| 1 | `E_INICIO` | Reposo. Espera tecla del keypad. | — |
-| 2 | `E_BOTON` | Ingreso de PIN (4 dígitos enmascarados). | timeout 10s |
-| 3 | `E_CLAVE_CORRECTA` | PIN válido. Cerradura abierta. | 2s |
-| 4 | `E_CONFIG` | Menú EEPROM: usuarios/horarios/roles. | — |
-| 5 | `E_TIEMPO_2_SEC` | Countdown post-desbloqueo. | 2s |
-| 6 | `E_MONITOR_AMBIENTAL` | Monitoreo temperatura + luz. | 3s |
-| 7 | `E_SISTEMA_BLOQUEADO` | 3 intentos fallidos. | inmediato |
-| 8 | `E_BLOQUEO` | LED rojo intermitente (100/500ms). | 4s |
-| 9 | `E_ALARMA` | Buzzer + LED rojo (300/700ms). | 5s + rearme |
-| 10 | `E_MONITOR_INTRUSOS` | Vigilancia hall + micrófono. | 2s |
+| # | State | Description | Timing |
+|---|-------|-------------|--------|
+| 1 | `S_INICIO` | Idle. Waits for keypad input or menu trigger. | PIN timeout 10s |
+| 2 | `S_CONFIG` | Valid PIN + role in window. Servo unlocked. | 2s |
+| 3 | `S_BLOQUEO` | 3 failed attempts. Red LED 300/700ms. | 5s |
+| 4 | `S_MONITOR_INTRUSOS` | Hall + mic monitoring. | 2s |
+| 5 | `S_MONITOR_AMBIENTAL` | Temp + light monitoring (RunningAverage). | 4s |
+| 6 | `S_ALARMA` | Buzzer ON. Red LED 100/500ms. | 2s + triple rearm |
 
-### Transiciones Principales
+### Main Transitions
 
 ```
-INICIO --(tecla)--> BOTON
-BOTON --(# sin digitos)--> CONFIG
-BOTON --(PIN ok)--> CLAVE_CORRECTA --(2s)--> TIEMPO_2_SEC --(2s)--> MONITOR_AMBIENTAL
-BOTON --(3 fallos)--> SISTEMA_BLOQUEADO --> BLOQUEO --(4s)--> INICIO
-BOTON --(* o timeout 10s)--> INICIO
-MONITOR_AMBIENTAL --(umbral temp/luz)--> ALARMA --(5s)--> MONITOR_INTRUSOS
-MONITOR_AMBIENTAL --(3s sin novedad)--> INICIO
-MONITOR_INTRUSOS --(hall o mic)--> ALARMA (triple rearme en 12s)
-MONITOR_INTRUSOS --(2s sin novedad)--> INICIO
-CONFIG --(*)--> INICIO
+INICIO --(correct PIN + role in window)--> CONFIG --(2s)--> INICIO
+INICIO --(3 failed attempts)--> BLOQUEO --(5s)--> INICIO
+MONITOR_AMBIENTAL --(threshold)--> ALARMA --(2s)--> MONITOR_INTRUSOS
+MONITOR_AMBIENTAL --(4s no event)--> INICIO
+MONITOR_INTRUSOS --(hall/mic)--> ALARMA (triple rearm 12s)
+MONITOR_INTRUSOS --(2s no event)--> INICIO
+INICIO --(# without digits)--> Menu (PIN change, within INICIO)
 ```
 
 ---
 
-## 🖼️ Diagramas de Secuencia
+## Sequence Diagrams
 
-### Ingreso Exitoso (Happy Path)
+### Successful Entry (Happy Path)
 
-PIN correcto → desbloqueo de cerradura → monitoreo ambiental → retorno a reposo.
+Correct PIN + role in window → servo unlock (2s) → return to idle.
 
-| Secuencia de Ingreso |
-|----------------------|
-| ![IngresoExitoso](docs/UML/IngresoExitoso.png) |
+| Entry Sequence |
+|----------------|
+| ![EntrySuccess](docs/UML/IngresoExitoso.png) |
 
-**Flujo:**
-1. El usuario presiona teclas → se almacenan en `bufferPIN[]`
-2. Confirma con `#` → se valida contra `pinMaestro` en EEPROM
-3. PIN OK → transición a `E_CLAVE_CORRECTA` → relay activado 2s
-4. Transición a `E_TIEMPO_2_SEC` → relay desactivado, countdown 2s
-5. Transición a `E_MONITOR_AMBIENTAL` → lectura NTC + LDR por 3s
-6. Sin umbrales violados → retorno a `E_INICIO`
-
----
-
-### Intrusión y Alarma
-
-Sensor Hall o micrófono → activación de alarma → monitoreo de intrusos → rearme triple.
-
-| Secuencia de Alarma |
-|---------------------|
-| ![IntrusionAlarma](docs/UML/IntrusionAlarma.png) |
-
-**Flujo:**
-1. `leerHall()` > 512 (puerta abierta) o `leerMicrofono()` > 800
-2. Transición a `E_ALARMA` → buzzer ON + LED rojo parpadea (300/700ms)
-3. Cada nueva detección incrementa `contadorDisparosAlarma`
-4. Si llega a 3 dentro de 12s (`T_TRIPLE`) → rearme por 5s más
-5. Sin más detecciones → transición a `E_MONITOR_INTRUSOS` por 2s
-6. Sin novedad → retorno a `E_INICIO`
+**Flow:**
+1. User presses digits → stored in `pinBuf[]`
+2. Confirms with `#` → validated via `findUserByPin()`
+3. Role time window checked via `isInTimeWindow()`
+4. Auth OK → transition to `S_CONFIG` → servo unlocked 2s
+5. Timer expires → return to `S_INICIO`
 
 ---
 
-### Bloqueo por Intentos Fallidos
+### Intrusion and Alarm
 
-3 PIN incorrectos → bloqueo temporal con LED intermitente.
+Hall or microphone trigger → ALARMA (2s, buzzer + LED) → MONITOR_INTRUSOS → triple rearm.
 
-| Secuencia de Bloqueo |
-|----------------------|
-| ![BloqueoIntentos](docs/UML/BloqueoIntentos.png) |
+| Alarm Sequence |
+|----------------|
+| ![IntrusionAlarm](docs/UML/IntrusionAlarma.png) |
 
-**Flujo:**
-1. Cada PIN incorrecto incrementa `intentosFallidos`
-2. Al llegar a 3 → transición a `E_SISTEMA_BLOQUEADO` (inmediato)
-3. Transición inmediata a `E_BLOQUEO` → LED rojo parpadea (100/500ms) por 4s
-4. Pasados 4s → retorno a `E_INICIO` con `intentosFallidos = 0`
-
----
-
-### Configuración de Usuario (Menú CONFIG)
-
-Acceso al menú EEPROM para alta de usuarios, horarios y roles.
-
-| Secuencia de Configuración |
-|----------------------------|
-| ![ConfigUsuario](docs/UML/ConfigUsuario.png) |
-
-**Flujo:**
-1. Desde `E_BOTON`, presionar `#` sin dígitos → `E_CONFIG`
-2. Menú: `1`=Usuario, `2`=Horario, `3`=Rol, `*`=Salir
-3. Opción 1: seleccionar índice de usuario (0-9), ingresar PIN 4 dígitos
-4. Guarda en EEPROM en `DIR_USUARIOS + idx * 8`
-5. `*` para salir → retorno a `E_INICIO`
+**Flow:**
+1. `hallVal > 512` (door open) or `micVal > 800` (sound)
+2. Transition to `S_ALARMA` → buzzer ON + LED flash (100/500ms)
+3. Each new detection increments `alarmCount`
+4. 3 events within 12s (`T_TRIPLE`) → alarm timer reset
+5. Timer expires → transition to `S_MONITOR_INTRUSOS` (2s)
+6. No new events → return to `S_INICIO`
 
 ---
 
-## 🧠 Estructura del Código
+### Blocked State
 
-`src/main.ino` está organizado en secciones en este orden:
+3 wrong PINs → BLOQUEO (5s, LED 300/700ms) → restore.
 
-| Sección | Líneas | Contenido |
-|---------|--------|-----------|
-| Header | 1-20 | Comentarios, descripción, diagrama de transiciones |
-| Includes | 22-31 | Librerías: Arduino, StateMachineLib, EEPROM, Keypad, LCD (opcional) |
-| Pines | 33-46 | Asignación de pines (D2-D13, A0-A5) |
-| Constantes | 48-64 | Timing, umbrales, constantes físicas (Steinhart-Hart) |
-| Estructuras | 66-77 | `Usuario`, `Horario` |
-| EEPROM Layout | 79-88 | Direcciones de memoria persistente |
-| Enumeraciones | 90-98 | `Estado` (10), `Trigger` (8) |
-| Variables Globales | 100-140 | Estado, buffer, contadores, sensores |
-| Funciones Sensores | 142-153 | `leerNTC()`, `leerLDR()`, `leerHall()`, `leerMicrofono()` |
-| Funciones Actuadores | 155-159 | `encenderRele()`, `activarLEDAlarma()`, `activarBuzzer()` |
-| Funciones EEPROM | 161-197 | `initEEPROM()`, `leerUsuario()`, `escribirUsuario()`, etc. |
-| Validación PIN | 199-227 | `validarPIN()` con rotación tras 4 usos |
-| Display | 229-288 | `mostrarInfoEstado()` por Serial + LCD opcional |
-| Handlers FSM | 290-426 | `alEntrar*()` y `alSalir*()` para cada estado |
-| Entrada | 428-463 | `procesarEntrada()` — lectura de keypad + lógica por estado |
-| Menú Config | 465-528 | `menuConfig()` — 3 opciones con sub-pasos |
-| Actualización | 530-559 | `actualizarEstado()` — blink patterns + sensores activos |
-| `setup()` | 561-579 | Inicialización de pines, EEPROM, FSM |
-| `loop()` | 581-586 | `procesarEntrada()` → `actualizarEstado()` → `fsm.Update()` |
+| Block Sequence |
+|----------------|
+| ![BlockAttempts](docs/UML/BloqueoIntentos.png) |
+
+**Flow:**
+1. Each wrong PIN increments `failCount`
+2. At 3 → `TRIG_LOCKOUT` → transition to `S_BLOQUEO`
+3. LED blinks 300ms ON / 700ms OFF for 5s
+4. Timer expires → return to `S_INICIO` with `failCount = 0`
 
 ---
 
-## 🔌 Asignación de Pines
+### PIN Change Menu
 
-> **Nota:** Todos los pines del proyecto son compatibles entre Arduino Uno y
-> Arduino Mega. La única diferencia está en el bus I2C del LCD opcional.
+From INICIO, press `#` with no digits → menu → change PIN with history check.
 
-| Pin | Función | Tipo | Notas |
-|-----|---------|------|-------|
-| D2-D5 | Keypad Rows (4×4) | INPUT_PULLUP | Filas del teclado matricial |
-| D6-D9 | Keypad Columns | INPUT | Columnas del teclado matricial |
-| D10 | LED_ROJO | OUTPUT | PWM, patrón de alarma/bloqueo |
-| D11 | BUZZER | OUTPUT | Piezo, alarma sonora |
-| D12 | LOCK_RELAY | OUTPUT | Control de cerradura eléctrica |
-| D13 | LED_BUILTIN | OUTPUT | Indicador de cerradura activa |
-| A0 | MICROFONO | INPUT | Sensor de sonido analógico |
-| A1 | NTC_TERMISTOR | INPUT | Temperatura (Steinhart-Hart) |
-| A2 | LDR | INPUT | Nivel de luz |
-| A3 | HALL | INPUT | Sensor magnético de puerta |
-| ⚠️ **D20** | I2C SDA (LCD) | — | **En Mega:** D20, NO A4 |
-| ⚠️ **D21** | I2C SCL (LCD) | — | **En Mega:** D21, NO A5 |
+| Config Sequence |
+|-----------------|
+| ![ConfigUser](docs/UML/ConfigUsuario.png) |
 
-### Mapa del Teclado 4×4
+**Flow:**
+1. From `S_INICIO`, press `#` with empty pin → menu mode activated
+2. Step 0: Enter current PIN → validated
+3. Step 1: Enter new PIN (4-6 digits) → checked against history
+4. New PIN saved → `rotatePin()` pushes old PIN to history, resets uses
+5. `*` cancels at any step
+
+---
+
+## Code Structure
+
+`src/main.ino` is organized by sections:
+
+| Section | Lines | Content |
+|---------|-------|---------|
+| Header | 1-24 | Comments, description, transition diagram |
+| Includes | 26-36 | Libraries: Arduino, StateMachineLib, AsyncTaskLib, Keypad, Servo, LiquidCrystal, RunningAverage, EEPROM |
+| Pin Defs | 38-60 | Pin assignments (D2-D12, D22-D27, A0-A3) |
+| Timings | 62-79 | Constants: T_UNLOCK, T_LOCKOUT, T_ENV_MONITOR, T_ALARM, etc. |
+| Thresholds | 81-89 | TEMP_LOW/HIGH, LIGHT_MIN, SOUND_HIGH, HALL_OPEN |
+| PIN/Pin History | 91-105 | Min/max digits, max uses, Steinhart-Hart, history length |
+| EEPROM Layout | 107-122 | Address map: magic, count, users (24 bytes each, 10 max) |
+| Enums | 124-145 | State (6), Trigger (4), Role (4) |
+| Time Windows | 147-165 | Hardcoded access schedules per role |
+| Global Objects | 167-195 | FSM, Keypad, Servo, LCD, RunningAverages, AsyncTask |
+| State Variables | 197-228 | pinBuf, failCount, alarmCount, blink state, menu state |
+| EEPROM Funcs | 232-285 | initEEPROM, loadUser, saveUser |
+| Access Validation | 287-355 | findUserByPin, pinIsUnique, rotatePin, validateAccess |
+| Actuator Helpers | 357-365 | setLED, setBuzzer, unlockDoor, lockDoor |
+| LCD Display | 367-419 | updateDisplay with per-state formatting |
+| FSM Handlers | 421-490 | onEnter/onLeave for each state |
+| Input Processing | 492-559 | handleMenuKey, handlePinEntry, processInput |
+| State Update | 561-619 | State timing, sensor monitoring, LED blink, LCD refresh |
+| FSM Setup | 621-670 | setupFSM with all transitions |
+| AsyncTask | 672-690 | Sensor averaging task (200ms) |
+| setup() | 692-717 | Initialization: pins, servo, LCD, EEPROM, tasks, FSM |
+| loop() | 719-728 | processInput → updateState → sensorTask.Update() → fsm.Update() |
+
+---
+
+## Pin Assignment
+
+| Pin | Function | Type | Notes |
+|-----|----------|------|-------|
+| D2-D5 | Keypad Rows (4x4) | INPUT_PULLUP | Matrix rows |
+| D6-D9 | Keypad Columns | INPUT | Matrix columns |
+| D10 | RED_LED | OUTPUT | Alarm/block pattern |
+| D11 | BUZZER | OUTPUT | Piezo, on in ALARMA |
+| D12 | SERVO | OUTPUT | PWM, door lock |
+| D22 | LCD_RS | OUTPUT | LCD register select |
+| D23 | LCD_EN | OUTPUT | LCD enable |
+| D24-D27 | LCD_D4-D7 | OUTPUT | LCD data lines (4-bit) |
+| A0 | MICROPHONE | INPUT | KY-037 sound |
+| A1 | NTC_THERMISTOR | INPUT | KY-013 temp |
+| A2 | LDR | INPUT | KY-018 light |
+| A3 | HALL | INPUT | KY-035 door sensor |
+
+### Keypad Map
 
 ```
 ┌───┬───┬───┬───┐
@@ -222,146 +214,153 @@ Acceso al menú EEPROM para alta de usuarios, horarios y roles.
 └───┴───┴───┴───┘
 ```
 
-**Teclas funcionales:**
-- `#` — Confirmar PIN / Acceder a CONFIG (sin dígitos)
-- `*` — Cancelar / Salir de CONFIG
-- `0-9` — Dígitos del PIN
+**Functional keys:**
+- `#` — Confirm PIN / Enter menu (no digits)
+- `*` — Cancel / Exit menu
+- `0-9` — PIN digits
 
 ---
 
-## 💾 Layout de EEPROM
+## EEPROM Layout (4KB)
 
-| Dirección | Contenido | Tamaño |
-|-----------|-----------|--------|
+| Address | Content | Size |
+|---------|---------|------|
 | `0x00` | Magic number (`0xA5`) | 1 byte |
-| `0x01` | Cantidad de usuarios | 1 byte |
-| `0x02` - `0x51` | Usuarios (10 × 8 bytes) | 80 bytes |
-| `0x52` | Cantidad de horarios | 1 byte |
-| `0x53` - `0x92` | Horarios (8 × 8 bytes) | 64 bytes |
-| `0xC8` | PIN maestro | 4 bytes |
+| `0x01` | User count | 1 byte |
+| `0x02` - `0xF1` | Users (10 × 24 bytes) | 240 bytes |
 
-**Estructura de cada usuario (8 bytes):**
+**User record structure (24 bytes):**
 ```
-[PIN 4B][rol 1B][usos 1B][activo 1B][padding 1B]
+[PIN 4B][role 1B][uses 1B][active 1B][histIdx 1B][history 16B]
 ```
-
-**Estructura de cada horario (8 bytes):**
-```
-[indiceUsuario 1B][horaInicio 1B][minInicio 1B]
-[horaFin 1B][minFin 1B][dias 1B][activo 1B][padding 1B]
-```
+- `role`: 1=Seguridad, 2=Operario, 3=Coordinador, 4=Gerente
+- `uses`: counter, max 4 before PIN rotation
+- `histIdx`: current index in circular history buffer
+- `history`: 4 previous PINs (4 bytes each)
 
 ---
 
-## ⏱️ Constantes de Timing
+## Timing Constants
 
-| Constante | Valor | Propósito |
-|-----------|-------|-----------|
-| `T_REBOTE` | 50 ms | Debounce de teclado |
-| `T_INPUT` | 10 s | Timeout para ingreso de PIN |
-| `T_DESBLOQUEO` | 2 s | Duración de cerradura abierta |
-| `T_CONTEO` | 2 s | Countdown post-desbloqueo |
-| `T_BLOQUEO` | 4 s | Duración de estado bloqueado |
-| `T_ALARMA` | 5 s | Duración de alarma |
-| `T_INTRUSOS` | 2 s | Ventana de monitoreo de intrusos |
-| `T_AMBIENTAL` | 3 s | Ventana de monitoreo ambiental |
-| `T_TRIPLE` | 12 s | Ventana para triple rearme de alarma |
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `T_UNLOCK` | 2 s | Servo unlock duration |
+| `T_LOCKOUT` | 5 s | Blocked state duration |
+| `T_ENV_MONITOR` | 4 s | Environmental monitor window |
+| `T_ALARM` | 2 s | Alarm duration |
+| `T_INTRUSION` | 2 s | Intrusion monitor window |
+| `T_PIN_TIMEOUT` | 10 s | PIN input timeout |
+| `T_TRIPLE` | 12 s | Triple alarm rearm window |
+| `SENSOR_INTERVAL` | 200 ms | AsyncTask sensor read interval |
+| `LCD_INTERVAL` | 250 ms | LCD refresh rate |
 
-### Patrones de Blink (LED Rojo)
+### LED Blink Patterns (Red LED)
 
-| Estado | On | Off | Duración total |
-|--------|----|-----|----------------|
-| `E_BLOQUEO` | 100 ms | 500 ms | 4 s (~7 ciclos) |
-| `E_ALARMA` | 300 ms | 700 ms | 5 s + rearmes |
-
----
-
-## 📐 Umbrales de Sensores
-
-| Sensor | Pin | Umbral | Lectura Normal | Lectura Alarma |
-|--------|-----|--------|----------------|----------------|
-| Temperatura baja | A1 | < 20 °C | 20-50 °C | < 20 °C |
-| Temperatura alta | A1 | > 50 °C | 20-50 °C | > 50 °C (fuego) |
-| Luz (LDR) | A2 | < 100 ADC | ≥ 100 | < 100 |
-| Hall (puerta) | A3 | > 512 ADC | ≤ 512 | > 512 (abierta) |
-| Micrófono | A0 | > 800 ADC | ≤ 800 | > 800 (sonido) |
+| State | On | Off | Pattern |
+|-------|----|-----|---------|
+| `S_BLOQUEO` | 300 ms | 700 ms | Slow flash |
+| `S_ALARMA` | 100 ms | 500 ms | Fast flash |
 
 ---
 
-## 🔒 Seguridad
+## Sensor Thresholds
 
-### Rotación de Claves
+| Sensor | Pin | Threshold | Normal | Alarm |
+|--------|-----|-----------|--------|-------|
+| Temperature (NTC) | A1 | < 20°C / > 50°C | 20-50°C | Outside range |
+| Light (LDR) | A2 | < 100 ADC | ≥ 100 | < 100 |
+| Hall (door) | A3 | > 512 ADC | ≤ 512 | > 512 (open) |
+| Microphone | A0 | > 800 ADC | ≤ 800 | > 800 (sound) |
 
-Cada usuario tiene un contador `usos` que se incrementa en cada ingreso exitoso.
-Al llegar a 4 usos:
-1. El contador se reinicia a 0
-2. Se genera un nuevo PIN aleatorio de 4 dígitos
-3. Se guarda en EEPROM y se muestra por Serial
-
-### Política de Intentos
-
-- Máximo 3 intentos fallidos consecutivos
-- Al superarlos: bloqueo de 4 segundos con LED intermitente
-- Después del bloqueo: los intentos vuelven a 0
-
-### Roles de Usuario
-
-| Código | Rol | Descripción |
-|--------|-----|-------------|
-| 0 | Seguridad | Acceso irrestricto |
-| 1 | Operario | Acceso en horario laboral |
-| 2 | Coordinador | Acceso con ventanas extendidas |
-| 3 | Gerente | Acceso irrestricto + gestión de usuarios |
+All analog sensors are read via `AsyncTaskLib` at 200ms intervals.
+Temperature and light use `RunningAverage` library (5 samples) for smoothing.
 
 ---
 
-## 📦 Dependencias
+## Security
 
-| Librería | Versión | Fuente | Propósito |
-|----------|---------|--------|-----------|
-| StateMachineLib | 1.0.0 | Local (`lib/`) | Máquina de estados finitos |
-| AsyncTaskLib | 1.0.0 | luisllamasbinaburo | Tareas asíncronas (no usado activamente) |
-| Keypad | 3.1.1 | chris--a | Driver para teclado matricial 4×4 |
-| EEPROM | built-in | Arduino | Memoria persistente |
+### PIN Rotation Policy
+
+Each user has a `uses` counter incremented on each successful entry.
+When uses reaches 4:
+1. Access is still granted for the 4th use
+2. `pinChangeRequired` flag is set
+3. The next authentication attempt with the same PIN is rejected
+4. User must change PIN via the menu (`#` from IDLE with no digits)
+5. New PIN is checked against current PIN + 4 previous PINs in history
+6. Old PIN is pushed into circular history buffer on successful change
+
+### Failed Attempt Policy
+
+- Maximum 3 consecutive failed attempts
+- At threshold: 5-second block (S_BLOQUEO) with LED 300/700ms
+- After block: counter resets to 0
+
+### User Roles
+
+| Code | Role | Access Level |
+|------|------|--------------|
+| 1 | Seguridad | Full access |
+| 2 | Operario | Production area (time-limited) |
+| 3 | Coordinador | Extended access |
+| 4 | Gerente | Full access + user management |
+
+Time windows are hardcoded as `constexpr` tables. With an RTC module,
+`isInTimeWindow()` validates access per role schedule.
 
 ---
 
-## 🧪 Compilación y Build
+## Dependencies
+
+| Library | Version | Source | Purpose |
+|---------|---------|--------|---------|
+| StateMachineLib | 1.0.0 | Local (`lib/`) | Finite state machine |
+| AsyncTaskLib | 1.0.0 | luisllamasbinaburo | Non-blocking sensor timing |
+| Keypad | 3.1.1 | chris--a | 4x4 matrix keypad driver |
+| RunningAverage | 0.4.9 | robtillaart | Analog sensor smoothing |
+| Servo | 1.3.0 | arduino-libraries | Servo motor lock control |
+| LiquidCrystal | 1.0.7 | arduino-libraries | 16x2 LCD display |
+| EEPROM | built-in | Arduino | Persistent storage |
+
+---
+
+## Compilation and Build
 
 ```bash
-scripts/build.sh build       # Compilar
-scripts/build.sh upload      # Compilar + subir a placa
-scripts/build.sh run         # Subir + abrir monitor serie
-scripts/build.sh monitor     # Monitor serie (9600 baud)
-scripts/build.sh clean       # Limpiar
-scripts/build.sh size        # Mostrar uso de memoria
-scripts/build.sh deps        # Instalar dependencias
+scripts/build.sh build       # Compile
+scripts/build.sh upload      # Compile + upload to board
+scripts/build.sh run         # Upload + serial monitor
+scripts/build.sh monitor     # Serial monitor (9600 baud)
+scripts/build.sh clean       # Clean build files
+scripts/build.sh size        # Show memory usage
+scripts/build.sh deps        # Install dependencies
 scripts/build.sh full        # clean + deps + build
 scripts/build.sh -v build    # Verbose
 ```
 
-**Uso de memoria actual (en Arduino Mega):**
+**Memory usage (Arduino Mega):**
 ```
-RAM:    487 bytes (5.9%) de 8192
-Flash:  13406 bytes (5.2%) de 262144
+RAM:    725 bytes (8.9%) of 8192
+Flash:  16494 bytes (6.5%) of 253952
 ```
 
 ---
 
-## 📁 Archivos del Proyecto
+## Project Files
 
 ```
 Arduino-Project/
 ├── src/
-│   └── main.ino              # Implementación completa (586 líneas)
+│   └── main.ino              # Full implementation (~560 lines)
 ├── lib/
-│   └── StateMachineLib/       # Librería de FSM local
+│   └── StateMachineLib/       # Local FSM library
 ├── spec/
-│   ├── ARQ_Proyecto.pptx.pdf  # Spec de la cátedra
-│   └── fsm_arqB.drawio.pdf    # Diagrama FSM original
+│   ├── ARQ_Proyecto.pptx.pdf  # Course spec
+│   └── fsm_arqB.drawio.pdf    # Original FSM diagram
 ├── docs/
-│   ├── examples/              # Sketches de ejemplo de sensores
-│   └── UML/                   # Diagramas generados
+│   ├── examples/              # Sensor example sketches
+│   ├── PRD.md                 # Product Requirements Document
+│   └── UML/                   # Generated diagrams
 │       ├── Clases.png
 │       ├── IngresoExitoso.png
 │       ├── IntrusionAlarma.png
@@ -372,73 +371,52 @@ Arduino-Project/
 │       ├── secuencia-alarma.puml
 │       ├── secuencia-bloqueo.puml
 │       └── secuencia-config.puml
-├── openspec/                  # Artefactos SDD
+├── openspec/                  # SDD artifacts
 ├── scripts/
-│   └── build.sh              # Script de compilación
-├── platformio.ini             # Configuración PlatformIO
-├── AGENTS.md                  # Instrucciones para agentes AI
-└── README.md                  # Este documento
+│   └── build.sh              # Build script
+├── platformio.ini             # PlatformIO config
+├── AGENTS.md                  # AI agent instructions
+└── README.md                  # This file
 ```
 
 ---
 
-## 🔄 Ciclo de Vida del Sistema
+## System Lifecycle
 
 ```
                     ┌──────────┐
-                    │  INICIO  │ <──────────────────────────┐
-                    └────┬─────┘                            │
-                         │ tecla                            │
-                         v                                  │
-                    ┌──────────┐                            │
-              ┌────>│  BOTON   │────┐                       │
-              │     └──────────┘    │                       │
-              │          │          │                       │
-              │     timeout/*       │ 3 fallos              │
-              │          │          │                       │
-              │          v          v                       │
-              │     ┌──────────┐ ┌────────────┐            │
-              │     │  INICIO  │ │ SIS. BLOQ. │            │
-              │     └──────────┘ └──────┬──────┘            │
-              │                         │                   │
-              │                         v                   │
-              │                    ┌──────────┐             │
-              │                    │ BLOQUEO  │── 4s ───────┤
-              │                    └──────────┘             │
-              │                                             │
-              │ PIN ok         # sin digitos                │
-              │     │              │                        │
-              │     v              v                        │
-              │  ┌──────────┐ ┌──────────┐                  │
-              │  │ CLAVE OK │ │  CONFIG  │── * ─────────────┤
-              │  └────┬─────┘ └──────────┘                  │
-              │       │ 2s                                  │
-              │       v                                     │
-              │  ┌──────────────┐                            │
-              │  │ TIEMPO 2 SEC │                            │
-              │  └──────┬───────┘                            │
-              │         │ 2s/tecla                           │
-              │         v                                   │
-              │  ┌──────────────────┐                        │
-              │  │ MONITOR AMBIENTAL│─── 3s ─────────────────┤
-              │  └────────┬─────────┘                        │
-              │           │ umbral                           │
-              │           v                                  │
-              │  ┌──────────┐                                │
-              │  │  ALARMA  │─── 5s ─────────────────────────┤
-              │  └─────┬────┘                                │
-              │        │ triple rearme                       │
-              │        v                                     │
-              │  ┌──────────────────┐                        │
-              │  │ MONITOR INTRUSOS │─── 2s ─────────────────┘
-              │  └──────────────────┘
-              │           │ intrusion
-              │           v
-              │     ┌──────────┐
-              └─────│  ALARMA  │ (rearme)
-                    └──────────┘
+                    │  INICIO  │ <────────────────────────┐
+                    └────┬─────┘                          │
+                         │ correct PIN + role             │
+                         v                                │
+                    ┌──────────┐                          │
+                    │  CONFIG  │── 2s ─────────────────────┤
+                    └──────────┘                          │
+                                                          │
+                    ┌──────────┐                          │
+         ┌────────>│ BLOQUEO  │── 5s ─────────────────────┤
+         │         └──────────┘                          │
+         │                                                │
+         │         ┌──────────────────┐                   │
+         │         │ MONITOR AMBIENTAL│── 4s ─────────────┤
+         │         └────────┬─────────┘                   │
+         │                  │ threshold                   │
+         │                  v                             │
+         │         ┌──────────┐                           │
+         │         │  ALARMA  │── 2s ─────────────────────┘
+         │         └─────┬────┘         ┌──────────────────┐
+         │               │ triple       │                  │
+         │               v              v                  │
+         │         ┌──────────────────┐                    │
+         │         │ MONITOR INTRUSOS │── 2s ──────────────┘
+         │         └───────┬──────────┘
+         │                 │ hall/mic
+         │                 v
+         │         ┌──────────┐
+         └─────────│  ALARMA  │ (rearm)
+                   └──────────┘
 ```
 
 ---
 
-*Documento generado para Arquitectura Computacional — 2026*
+*Document generated for Arquitectura Computacional — 2026*

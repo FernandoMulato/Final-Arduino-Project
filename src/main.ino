@@ -1,586 +1,865 @@
 /*
- * SISTEMA DE CONTROL DE ACCESO Y SEGURIDAD
+ * ACCESS CONTROL AND SECURITY SYSTEM
  * Arquitectura Computacional — Arduino Mega (ATmega2560)
  *
- * FSM de 10 estados: INICIO, BOTON, CLAVE_CORRECTA, CONFIG,
- * TIEMPO_2_SEC, MONITOR_AMBIENTAL, SISTEMA_BLOQUEADO, BLOQUEO,
- * ALARMA, MONITOR_INTRUSOS
+ * FSM of 6 states: INICIO, CONFIG, BLOQUEO, MONITOR_INTRUSOS,
+ * MONITOR_AMBIENTAL, ALARMA
  *
- * Librerías: StateMachineLib, Keypad, EEPROM
- * LCD 16x2 I2C opcional: descomentar #define USE_LCD
+ * Libraries: StateMachineLib, AsyncTaskLib, Keypad, Servo,
+ *            LiquidCrystal, Average, EEPROM
+ * Board: Arduino Mega (ATmega2560) — EEPROM: 4KB
  *
- * Diagrama de transiciones:
- *   INICIO --(tecla)--> BOTON --(# vacio)--> CONFIG
- *     ^                    |--(PIN ok)--> CLAVE_CORRECTA --(2s)--> TIEMPO_2_SEC
- *     |                    |--(3 fallos)--> SISTEMA_BLOQUEADO --> BLOQUEO --(4s)--> INICIO
- *     |                    +--(* o timeout)-------------------------------------> INICIO
- *     |    TIEMPO_2_SEC --(2s)--> MONITOR_AMBIENTAL --(umbral)--> ALARMA --(5s)--> MONITOR_INTRUSOS
- *     |    TIEMPO_2_SEC --(tecla)--> INICIO            --(3s)----> INICIO   --(2s)--> INICIO
- *     +-----------------------------------------------------------------------------+
+ * Transitions:
+ *   INICIO --(correct PIN + role in window)--> CONFIG
+ *   INICIO --(3 failed attempts)--> BLOQUEO
+ *   CONFIG --(2s unlock expired)--> INICIO
+ *   BLOQUEO --(5s expired)--> INICIO
+ *   MONITOR_AMBIENTAL --(threshold triggered)--> ALARMA
+ *   MONITOR_AMBIENTAL --(4s timeout, no event)--> INICIO
+ *   MONITOR_INTRUSOS --(hall/mic triggered)--> ALARMA
+ *   MONITOR_INTRUSOS --(2s timeout, no event)--> INICIO
+ *   ALARMA --(2s, <3 in 12s)--> MONITOR_INTRUSOS
+ *   ALARMA --(3 events in 12s)--> extended block -> MONITOR_INTRUSOS
  */
 
+// ============================================================================
+// INCLUDES
+// ============================================================================
 #include <Arduino.h>
 #include <StateMachineLib.h>
 #include <EEPROM.h>
 #include <Keypad.h>
+#include <Servo.h>
+#include <LiquidCrystal.h>
+#include <RunningAverage.h>
+#include <AsyncTaskLib.h>
 
-// #define USE_LCD  // Descomentar para LCD 16x2 I2C (Mega: D20=SDA, D21=SCL)
-#ifdef USE_LCD
-#include <LiquidCrystal_I2C.h>
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-#endif
+// ============================================================================
+// PIN DEFINITIONS
+// ============================================================================
+// Keypad 4x4 matrix (rows D2-D5, cols D6-D9)
+constexpr uint8_t ROW_PINS[4] = {2, 3, 4, 5};
+constexpr uint8_t COL_PINS[4] = {6, 7, 8, 9};
 
-// ========== PINES ==========
-// Teclado 4x4 (arrays no-const para Keypad library)
-byte pinesFilas[4] = {2, 3, 4, 5};
-byte pinesCols[4]  = {6, 7, 8, 9};
-// Actuadores
-constexpr uint8_t PIN_LED_ROJO   = 10;
-constexpr uint8_t PIN_BUZZER     = 11;
-constexpr uint8_t PIN_RELE       = 12;
-constexpr uint8_t PIN_LED_BUILTIN = 13;
-// Sensores analógicos
-constexpr uint8_t PIN_MICROFONO = A0;
-constexpr uint8_t PIN_TERMISTOR = A1;
-constexpr uint8_t PIN_LDR       = A2;
-constexpr uint8_t PIN_HALL      = A3;
+// Actuators
+constexpr uint8_t PIN_LED    = 10;   // Red LED
+constexpr uint8_t PIN_BUZZER = 11;   // Piezo buzzer
+constexpr uint8_t PIN_SERVO  = 12;   // Servo lock
 
-// ========== CONSTANTES ==========
-constexpr unsigned long T_REBOTE     = 50;
-constexpr unsigned long T_INPUT      = 10000;
-constexpr unsigned long T_DESBLOQUEO = 2000;
-constexpr unsigned long T_CONTEO     = 2000;
-constexpr unsigned long T_BLOQUEO    = 4000;
-constexpr unsigned long T_ALARMA     = 5000;
-constexpr unsigned long T_INTRUSOS   = 2000;
-constexpr unsigned long T_AMBIENTAL  = 3000;
-constexpr unsigned long T_TRIPLE     = 12000;
-constexpr float UMBRAL_TEMP_BAJA = 20.0f;
-constexpr float UMBRAL_TEMP_ALTA = 50.0f;
-constexpr int   UMBRAL_LUZ       = 100;
-constexpr int   UMBRAL_SONIDO    = 800;
-constexpr int   UMBRAL_HALL      = 512;
-constexpr int   MAX_DIGITOS      = 4;
-constexpr float R1 = 10000.0f, C1 = 0.001129148f, C2 = 0.000234125f, C3 = 0.0000000876741f;
+// LCD 16x2 in 4-bit parallel mode
+constexpr uint8_t LCD_RS = 22, LCD_EN = 23;
+constexpr uint8_t LCD_D4 = 24, LCD_D5 = 25, LCD_D6 = 26, LCD_D7 = 27;
 
-// ========== ESTRUCTURAS ==========
-struct Usuario {
-  char    pin[5];
-  uint8_t rol;       // 0=seguridad, 1=operario, 2=coordinador, 3=gerente
-  uint8_t usos;      // Contador de usos (máx 4 antes de rotación)
-  bool    activo;
+// Analog sensors (A0-A3 on Mega)
+constexpr uint8_t PIN_MIC  = A0;   // Sound sensor KY-037
+constexpr uint8_t PIN_NTC  = A1;   // Temperature KY-013
+constexpr uint8_t PIN_LDR  = A2;   // Photoresistor KY-018
+constexpr uint8_t PIN_HALL = A3;   // Hall sensor KY-035
+
+// ============================================================================
+// TIMING CONSTANTS (ms) — Per PRD
+// ============================================================================
+constexpr unsigned long T_UNLOCK      = 2000;   // Servo unlock
+constexpr unsigned long T_LOCKOUT     = 5000;   // Block (PRD: 5s)
+constexpr unsigned long T_ENV_MONITOR = 4000;   // Environmental (PRD: 4s)
+constexpr unsigned long T_ALARM       = 2000;   // Alarm (PRD: 2s)
+constexpr unsigned long T_INTRUSION   = 2000;   // Intrusion window
+constexpr unsigned long T_PIN_TIMEOUT = 10000;  // PIN input timeout
+constexpr unsigned long T_TRIPLE      = 12000;  // Triple alarm window
+
+// LED blink patterns — Per PRD
+constexpr unsigned long BLK_ON  = 300;   // BLOQUEO on
+constexpr unsigned long BLK_OFF = 700;   // BLOQUEO off
+constexpr unsigned long ALM_ON  = 100;   // ALARMA on
+constexpr unsigned long ALM_OFF = 500;   // ALARMA off
+
+// ============================================================================
+// SENSOR THRESHOLDS
+// ============================================================================
+constexpr float TEMP_LOW     = 20.0f;
+constexpr float TEMP_HIGH    = 50.0f;
+constexpr int   LIGHT_MIN    = 100;
+constexpr int   SOUND_HIGH   = 800;
+constexpr int   HALL_OPEN    = 512;
+
+// ============================================================================
+// PIN CONSTANTS
+// ============================================================================
+constexpr uint8_t PIN_MIN_LEN  = 4;
+constexpr uint8_t PIN_MAX_LEN  = 6;
+constexpr uint8_t PIN_MAX_USES = 4;
+constexpr uint8_t PIN_HIST_LEN = 4;   // Number of previous PINs tracked
+
+// Steinhart-Hart coefficients for NTC thermistor
+constexpr float R1  = 10000.0f;
+constexpr float C1  = 0.001129148f;
+constexpr float C2  = 0.000234125f;
+constexpr float C3  = 0.0000000876741f;
+
+// Average samples
+constexpr uint8_t AVG_SAMPLES = 5;
+
+// ============================================================================
+// EEPROM LAYOUT (4KB on ATmega2560)
+// Each user record = 24 bytes
+// 10 users x 24 = 240 bytes total
+// ============================================================================
+constexpr uint8_t EEP_MAGIC       = 0;
+constexpr uint8_t EEP_USER_COUNT  = 1;
+constexpr uint8_t EEP_USERS_START = 2;
+constexpr uint8_t EEP_USER_SIZE   = 24;
+constexpr uint8_t EEP_MAGIC_VAL   = 0xA5;
+constexpr uint8_t MAX_USERS       = 10;
+
+// Offsets within each 24-byte user record
+constexpr uint8_t OFF_PIN      = 0;   // 4 bytes
+constexpr uint8_t OFF_ROLE     = 4;   // 1 byte
+constexpr uint8_t OFF_USES     = 5;   // 1 byte
+constexpr uint8_t OFF_ACTIVE   = 6;   // 1 byte
+constexpr uint8_t OFF_HIST_IDX = 7;   // 1 byte
+constexpr uint8_t OFF_HIST     = 8;   // 16 bytes (4 x 4-byte PINs)
+
+// ============================================================================
+// ENUMERATIONS
+// ============================================================================
+enum State : uint8_t {
+  S_INICIO,
+  S_CONFIG,
+  S_BLOQUEO,
+  S_MONITOR_INTRUSOS,
+  S_MONITOR_AMBIENTAL,
+  S_ALARMA
 };
-struct Horario {
-  uint8_t indiceUsuario;
-  uint8_t horaInicio, minInicio, horaFin, minFin, dias;
-  bool    activo;
-};
 
-// ========== EEPROM LAYOUT ==========
-constexpr uint8_t DIR_MAGICO        = 0;
-constexpr uint8_t DIR_CANT_USUARIOS = 1;
-constexpr uint8_t DIR_USUARIOS      = 2;     // 10 × 8 = 80
-constexpr uint8_t DIR_CANT_HORARIOS = 82;
-constexpr uint8_t DIR_HORARIOS      = 83;    // 8 × 8 = 64
-constexpr uint8_t DIR_PIN_MAESTRO   = 200;
-constexpr uint8_t MAGICO            = 0xA5;
-constexpr uint8_t MAX_USUARIOS      = 10;
-constexpr uint8_t MAX_HORARIOS      = 8;
-
-// ========== ENUMERACIONES ==========
-enum Estado : uint8_t {
-  E_INICIO, E_BOTON, E_CLAVE_CORRECTA, E_CONFIG, E_TIEMPO_2_SEC,
-  E_MONITOR_AMBIENTAL, E_SISTEMA_BLOQUEADO, E_BLOQUEO, E_ALARMA, E_MONITOR_INTRUSOS
-};
 enum Trigger : uint8_t {
-  TRIG_NONE, TRIG_CONFIG, TRIG_PIN_OK, TRIG_LOCKOUT, TRIG_CANCEL,
-  TRIG_SALIR_CONFIG, TRIG_ALARMA, TRIG_INTRUSION
+  TRIG_NONE,
+  TRIG_AUTH_OK,       // PIN + role window valid
+  TRIG_LOCKOUT,       // 3 failed attempts
+  TRIG_ENV_ALARM,     // Temperature or light threshold
+  TRIG_INTRUSION      // Hall or mic detection
 };
 
-// ========== VARIABLES GLOBALES ==========
-StateMachine fsm(10, 18);
-Estado estadoActual = E_INICIO;
-
-// Teclado 4x4
-const byte FILAS = 4, COLUMNAS = 4;
-char mapaTeclas[FILAS][COLUMNAS] = {
-  {'1','2','3','A'}, {'4','5','6','B'}, {'7','8','9','C'}, {'*','0','#','D'}
+// ============================================================================
+// ROLE DEFINITIONS — Per PRD section 6.1
+// ============================================================================
+enum Role : uint8_t {
+  ROLE_SEGURIDAD   = 1,
+  ROLE_OPERARIO    = 2,
+  ROLE_COORDINADOR = 3,
+  ROLE_GERENTE     = 4
 };
-Keypad teclado = Keypad(makeKeymap(mapaTeclas), pinesFilas, pinesCols, FILAS, COLUMNAS);
 
-// Buffer PIN
-char bufferPIN[MAX_DIGITOS + 1] = {0};
-uint8_t digitosIngresados = 0;
-unsigned long tiempoInicioInput = 0;
+constexpr const char* ROLE_NAMES[5] = {
+  "", "Seguridad", "Operario", "Coordinador", "Gerente"
+};
 
-// Disparador y temporizador
-Trigger triggerTransicion = TRIG_NONE;
-unsigned long tiempoEstado = 0;
-unsigned long tiempoUltimoBlink = 0;
-bool estadoLED = false;
+// ============================================================================
+// GLOBAL OBJECTS
+// ============================================================================
+// FSM: 6 states, 10 transitions
+StateMachine fsm(6, 10);
+State currentState = S_INICIO;
 
-// Seguridad
-uint8_t intentosFallidos = 0;
-uint8_t contadorBloqueos = 0;
-uint8_t contadorDisparosAlarma = 0;
-unsigned long tiempoInicioAlarma = 0;
+// Keypad 4x4
+constexpr uint8_t KP_ROWS = 4, KP_COLS = 4;
+char keyMap[KP_ROWS][KP_COLS] = {
+  {'1','2','3','A'}, {'4','5','6','B'},
+  {'7','8','9','C'}, {'*','0','#','D'}
+};
+Keypad keypad = Keypad(makeKeymap(keyMap),
+  (byte*)ROW_PINS, (byte*)COL_PINS, KP_ROWS, KP_COLS);
 
-// Config
-uint8_t nivelConfig = 0, opcionConfig = 0, pasoConfig = 0;
-char bufferConfig[20] = {0};
+// Servo
+Servo doorServo;
+constexpr uint8_t SRV_LOCKED   = 0;
+constexpr uint8_t SRV_UNLOCKED = 90;
 
-// PIN maestro
-char pinMaestro[5] = "1234";
+// LCD
+LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
 
-// Sensores
-int valorTermistor, valorLuz, valorHall, valorMicrofono;
-float logR2, R2, temperatura;
+// Average objects for sensor smoothing
+RunningAverage tempAvg(AVG_SAMPLES);
+RunningAverage lightAvg(AVG_SAMPLES);
 
-// Bandera de tecla presionada (para transiciones FSM)
-bool teclaPresionada = false;
+// ============================================================================
+// GLOBAL STATE
+// ============================================================================
+// PIN entry
+char pinBuf[PIN_MAX_LEN + 1] = {0};
+uint8_t pinLen = 0;
+unsigned long pinStartTime = 0;
 
-// ========== FUNCIONES SENSORES ==========
-bool leerNTC() {
-  valorTermistor = analogRead(PIN_TERMISTOR);
-  if (valorTermistor == 0) valorTermistor = 1;
-  R2 = R1 * (1023.0f / (float)valorTermistor - 1.0f);
-  logR2 = log(R2);
-  temperatura = (1.0f / (C1 + C2 * logR2 + C3 * logR2 * logR2 * logR2)) - 273.15f;
-  return (temperatura < UMBRAL_TEMP_BAJA || temperatura > UMBRAL_TEMP_ALTA);
-}
-bool leerLDR() { valorLuz = analogRead(PIN_LDR); return (valorLuz < UMBRAL_LUZ); }
-bool leerHall() { valorHall = analogRead(PIN_HALL); return (valorHall > UMBRAL_HALL); }
-bool leerMicrofono() { valorMicrofono = analogRead(PIN_MICROFONO); return (valorMicrofono > UMBRAL_SONIDO); }
+// Auth
+uint8_t failCount = 0;
+uint8_t alarmCount = 0;
+unsigned long firstAlarmTime = 0;
 
-// ========== ACTUADORES ==========
-void encenderRele() { digitalWrite(PIN_RELE, HIGH); digitalWrite(PIN_LED_BUILTIN, HIGH); }
-void apagarRele() { digitalWrite(PIN_RELE, LOW); digitalWrite(PIN_LED_BUILTIN, LOW); }
-void activarLEDAlarma(bool e) { digitalWrite(PIN_LED_ROJO, e ? HIGH : LOW); estadoLED = e; }
-void activarBuzzer(bool e) { digitalWrite(PIN_BUZZER, e ? HIGH : LOW); }
+// State timing
+unsigned long stateEntryTime = 0;
 
-// ========== EEPROM ==========
+// Transition trigger (set by events, consumed by FSM)
+Trigger trig = TRIG_NONE;
+
+// Sensor data
+int hallVal = 0, micVal = 0;
+float temperature = 0.0f;
+int lightLevel = 0;
+
+// Blink state (used in updateState for LED patterns)
+unsigned long lastBlink = 0;
+bool ledOn = false;
+unsigned long blinkOnMs = 0, blinkOffMs = 0;
+bool blinkActive = false;
+
+// Menu / PIN change
+bool menuActive = false;
+uint8_t menuStep = 0;        // 0=old PIN, 1=new PIN, 2=confirm
+char menuBuf[PIN_MAX_LEN + 1] = {0};
+uint8_t menuBufLen = 0;
+uint8_t menuUserIdx = 0xFF;  // User changing PIN
+
+// PIN rotation flag — set when uses >= 4
+bool pinChangeRequired = false;
+uint8_t pinChangeUserIdx = 0xFF;
+
+// LCD update
+unsigned long lastLcdUpdate = 0;
+constexpr unsigned long LCD_INTERVAL = 250;
+
+// ============================================================================
+// FORWARD DECLARATIONS
+// ============================================================================
+void updateDisplay();
+void processInput();
+void updateState();
+
+void onEnterInicio();
+void onLeaveInicio();
+void onEnterConfig();
+void onLeaveConfig();
+void onEnterBloqueo();
+void onLeaveBloqueo();
+void onEnterMonitorIntrusos();
+void onLeaveMonitorIntrusos();
+void onEnterMonitorAmbiental();
+void onLeaveMonitorAmbiental();
+void onEnterAlarma();
+void onLeaveAlarma();
+
+// ============================================================================
+// EEPROM FUNCTIONS
+// ============================================================================
 void initEEPROM() {
-  if (EEPROM.read(DIR_MAGICO) != MAGICO) {
-    EEPROM.write(DIR_MAGICO, MAGICO);
-    EEPROM.write(DIR_CANT_USUARIOS, 0);
-    EEPROM.write(DIR_CANT_HORARIOS, 0);
-    for (uint8_t i = 0; i < 4; i++) EEPROM.write(DIR_PIN_MAESTRO + i, "1234"[i]);
-  }
-}
-void leerPinMaestroEEPROM() {
-  for (uint8_t i = 0; i < 4; i++) pinMaestro[i] = EEPROM.read(DIR_PIN_MAESTRO + i);
-  pinMaestro[4] = '\0';
-}
-void escribirPinMaestroEEPROM(const char* p) {
-  for (uint8_t i = 0; i < 4; i++) EEPROM.write(DIR_PIN_MAESTRO + i, p[i]);
-}
-Usuario leerUsuario(uint8_t idx) {
-  Usuario u; uint8_t addr = DIR_USUARIOS + idx * 8;
-  for (uint8_t i = 0; i < 4; i++) u.pin[i] = EEPROM.read(addr + i);
-  u.pin[4] = '\0'; u.rol = EEPROM.read(addr + 4); u.usos = EEPROM.read(addr + 5);
-  u.activo = EEPROM.read(addr + 6) != 0;
-  if (u.pin[0] < '0' || u.pin[0] > '9') u.activo = false;
-  return u;
-}
-void escribirUsuario(uint8_t idx, const Usuario& u) {
-  uint8_t addr = DIR_USUARIOS + idx * 8;
-  for (uint8_t i = 0; i < 4; i++) EEPROM.write(addr + i, u.pin[i]);
-  EEPROM.write(addr + 4, u.rol); EEPROM.write(addr + 5, u.usos);
-  EEPROM.write(addr + 6, u.activo ? 1 : 0);
-}
-void escribirHorario(uint8_t idx, const Horario& h) {
-  uint8_t addr = DIR_HORARIOS + idx * 8;
-  EEPROM.write(addr, h.indiceUsuario); EEPROM.write(addr+1, h.horaInicio);
-  EEPROM.write(addr+2, h.minInicio); EEPROM.write(addr+3, h.horaFin);
-  EEPROM.write(addr+4, h.minFin); EEPROM.write(addr+5, h.dias);
-  EEPROM.write(addr+6, h.activo ? 1 : 0);
-}
-
-// ========== VALIDACIÓN PIN ==========
-bool validarPIN(const char* ingresado) {
-  // Comparar contra PIN maestro
-  bool ok = true;
-  for (uint8_t i = 0; i < 4; i++) { if (ingresado[i] != pinMaestro[i]) { ok = false; break; } }
-  if (ok) return true;
-
-  // Comparar contra usuarios
-  uint8_t cant = EEPROM.read(DIR_CANT_USUARIOS);
-  for (uint8_t i = 0; i < cant; i++) {
-    Usuario u = leerUsuario(i);
-    if (!u.activo) continue;
-    ok = true;
-    for (uint8_t j = 0; j < 4; j++) { if (ingresado[j] != u.pin[j]) { ok = false; break; } }
-    if (ok) {
-      u.usos++;
-      if (u.usos >= 4) {
-        u.usos = 0;
-        int nuevo = random(0, 10000);
-        snprintf(u.pin, 5, "%04d", nuevo);
-        Serial.print(F("PIN rotado usuario ")); Serial.print(i);
-        Serial.print(F(": ")); Serial.println(u.pin);
-      }
-      escribirUsuario(i, u);
-      return true;
-    }
-  }
-  return false;
-}
-
-// ========== DISPLAY ==========
-void mostrarInfoEstado() {
-#ifdef USE_LCD
-  lcd.clear(); lcd.setCursor(0, 0);
-#endif
-  switch (estadoActual) {
-    case E_INICIO:
-      Serial.println(F("[INICIO] Sistema en reposo. Presione tecla para PIN."));
-#ifdef USE_LCD
-      lcd.print(F("SISTEMA REPOSO")); lcd.setCursor(0,1); lcd.print(F("Tecla para PIN"));
-#endif
-      break;
-    case E_BOTON:
-      Serial.print(F("[PIN] "));
-      for (uint8_t i = 0; i < MAX_DIGITOS; i++) Serial.print(i < digitosIngresados ? '*' : '-');
-      Serial.println(F("  #=ok *=cancel"));
-#ifdef USE_LCD
-      lcd.print(F("PIN:"));
-      for (uint8_t i = 0; i < MAX_DIGITOS; i++) lcd.print(i < digitosIngresados ? '*' : '-');
-#endif
-      break;
-    case E_CLAVE_CORRECTA:
-      Serial.println(F("[ACCESO] Cerradura abierta 2s"));
-#ifdef USE_LCD
-      lcd.print(F("ACCESO CONCEDIDO"));
-#endif
-      break;
-    case E_CONFIG:
-      Serial.println(F("[CONFIG] 1=Usuario 2=Horario 3=Rol *=Salir"));
-      break;
-    case E_TIEMPO_2_SEC: {
-      unsigned long r = (millis() < tiempoEstado) ? (tiempoEstado - millis()) / 1000 + 1 : 0;
-      Serial.print(F("[TIEMPO] ")); Serial.print(r); Serial.println(F(" seg"));
-      break;
-    }
-    case E_MONITOR_AMBIENTAL:
-      Serial.print(F("[AMBIENTE] Temp:")); Serial.print(temperatura, 1);
-      Serial.print(F("C Luz:")); Serial.println(valorLuz);
-      break;
-    case E_SISTEMA_BLOQUEADO:
-      Serial.println(F("[BLOQUEO] 3 intentos fallidos"));
-#ifdef USE_LCD
-      lcd.print(F("SISTEMA BLOQUEADO"));
-#endif
-      break;
-    case E_BLOQUEO:
-      Serial.println(F("[ESPERA] 4 segundos..."));
-      break;
-    case E_ALARMA:
-      Serial.println(F("[ALARMA] !!! Intrusion detectada !!!"));
-#ifdef USE_LCD
-      lcd.print(F("!!! ALARMA !!!"));
-#endif
-      break;
-    case E_MONITOR_INTRUSOS:
-      Serial.print(F("[INTRUSOS] Hall:")); Serial.print(valorHall);
-      Serial.print(F(" Mic:")); Serial.println(valorMicrofono);
-      break;
+  if (EEPROM.read(EEP_MAGIC) != EEP_MAGIC_VAL) {
+    EEPROM.write(EEP_MAGIC, EEP_MAGIC_VAL);
+    EEPROM.write(EEP_USER_COUNT, 0);
   }
 }
 
-// ========== DECLARACIONES ANTICIPADAS ==========
-void alEntrarInicio();
-void alEntrarBoton();
-void alEntrarClaveCorrecta();
-void alEntrarConfig();
-void alEntrarTiempo2Seg();
-void alEntrarMonitorAmbiental();
-void alEntrarSistemaBloqueado();
-void alEntrarBloqueo();
-void alEntrarAlarma();
-void alEntrarMonitorIntrusos();
-void alSalirInicio();
-void alSalirBoton();
-void alSalirClaveCorrecta();
-void alSalirConfig();
-void alSalirTiempo2Seg();
-void alSalirMonitorAmbiental();
-void alSalirSistemaBloqueado();
-void alSalirBloqueo();
-void alSalirAlarma();
-void alSalirMonitorIntrusos();
-void menuConfig(char tecla);
-
-// ========== CONFIGURACIÓN FSM ==========
-void configurarFSM() {
-  fsm.SetOnEntering(E_INICIO, alEntrarInicio);
-  fsm.SetOnEntering(E_BOTON, alEntrarBoton);
-  fsm.SetOnEntering(E_CLAVE_CORRECTA, alEntrarClaveCorrecta);
-  fsm.SetOnEntering(E_CONFIG, alEntrarConfig);
-  fsm.SetOnEntering(E_TIEMPO_2_SEC, alEntrarTiempo2Seg);
-  fsm.SetOnEntering(E_MONITOR_AMBIENTAL, alEntrarMonitorAmbiental);
-  fsm.SetOnEntering(E_SISTEMA_BLOQUEADO, alEntrarSistemaBloqueado);
-  fsm.SetOnEntering(E_BLOQUEO, alEntrarBloqueo);
-  fsm.SetOnEntering(E_ALARMA, alEntrarAlarma);
-  fsm.SetOnEntering(E_MONITOR_INTRUSOS, alEntrarMonitorIntrusos);
-  fsm.SetOnLeaving(E_INICIO, alSalirInicio);
-  fsm.SetOnLeaving(E_BOTON, alSalirBoton);
-  fsm.SetOnLeaving(E_CLAVE_CORRECTA, alSalirClaveCorrecta);
-  fsm.SetOnLeaving(E_CONFIG, alSalirConfig);
-  fsm.SetOnLeaving(E_TIEMPO_2_SEC, alSalirTiempo2Seg);
-  fsm.SetOnLeaving(E_MONITOR_AMBIENTAL, alSalirMonitorAmbiental);
-  fsm.SetOnLeaving(E_SISTEMA_BLOQUEADO, alSalirSistemaBloqueado);
-  fsm.SetOnLeaving(E_BLOQUEO, alSalirBloqueo);
-  fsm.SetOnLeaving(E_ALARMA, alSalirAlarma);
-  fsm.SetOnLeaving(E_MONITOR_INTRUSOS, alSalirMonitorIntrusos);
-
-  // INICIO → BOTON: cualquier tecla
-  fsm.AddTransition(E_INICIO, E_BOTON, []() { return teclaPresionada; });
-  // BOTON → CONFIG: # sin dígitos
-  fsm.AddTransition(E_BOTON, E_CONFIG, []() { return triggerTransicion == TRIG_CONFIG; });
-  // BOTON → CLAVE_CORRECTA: PIN válido
-  fsm.AddTransition(E_BOTON, E_CLAVE_CORRECTA, []() { return triggerTransicion == TRIG_PIN_OK; });
-  // BOTON → SISTEMA_BLOQUEADO: 3 fallos
-  fsm.AddTransition(E_BOTON, E_SISTEMA_BLOQUEADO, []() { return triggerTransicion == TRIG_LOCKOUT; });
-  // BOTON → INICIO: cancelación o timeout
-  fsm.AddTransition(E_BOTON, E_INICIO, []() {
-    return triggerTransicion == TRIG_CANCEL || (millis() - tiempoInicioInput) >= T_INPUT;
-  });
-  // CONFIG → INICIO: salir
-  fsm.AddTransition(E_CONFIG, E_INICIO, []() { return triggerTransicion == TRIG_SALIR_CONFIG; });
-  // CLAVE_CORRECTA → TIEMPO_2_SEC: 2s
-  fsm.AddTransition(E_CLAVE_CORRECTA, E_TIEMPO_2_SEC, []() { return millis() >= tiempoEstado; });
-  // TIEMPO_2_SEC → MONITOR_AMBIENTAL: 2s
-  fsm.AddTransition(E_TIEMPO_2_SEC, E_MONITOR_AMBIENTAL, []() { return millis() >= tiempoEstado; });
-  // TIEMPO_2_SEC → INICIO: cualquier tecla
-  fsm.AddTransition(E_TIEMPO_2_SEC, E_INICIO, []() { return teclaPresionada; });
-  // MONITOR_AMBIENTAL → ALARMA: umbral
-  fsm.AddTransition(E_MONITOR_AMBIENTAL, E_ALARMA, []() { return triggerTransicion == TRIG_ALARMA; });
-  // MONITOR_AMBIENTAL → INICIO: 3s sin novedad
-  fsm.AddTransition(E_MONITOR_AMBIENTAL, E_INICIO, []() { return millis() >= tiempoEstado; });
-  // SISTEMA_BLOQUEADO → BLOQUEO: inmediato
-  fsm.AddTransition(E_SISTEMA_BLOQUEADO, E_BLOQUEO, []() { return true; });
-  // BLOQUEO → INICIO: 4s
-  fsm.AddTransition(E_BLOQUEO, E_INICIO, []() { return millis() >= tiempoEstado; });
-  // ALARMA → MONITOR_INTRUSOS: 5s
-  fsm.AddTransition(E_ALARMA, E_MONITOR_INTRUSOS, []() { return millis() >= tiempoEstado; });
-  // MONITOR_INTRUSOS → ALARMA: intrusión
-  fsm.AddTransition(E_MONITOR_INTRUSOS, E_ALARMA, []() { return triggerTransicion == TRIG_INTRUSION; });
-  // MONITOR_INTRUSOS → INICIO: 2s
-  fsm.AddTransition(E_MONITOR_INTRUSOS, E_INICIO, []() { return millis() >= tiempoEstado; });
+uint8_t userCount() {
+  return EEPROM.read(EEP_USER_COUNT);
 }
 
-// ========== HANDLERS DE ESTADOS ==========
-void alEntrarInicio() {
-  estadoActual = E_INICIO; intentosFallidos = 0; digitosIngresados = 0;
-  triggerTransicion = TRIG_NONE; teclaPresionada = false;
-  apagarRele(); activarBuzzer(false); activarLEDAlarma(false);
-  mostrarInfoEstado();
+void setUserCount(uint8_t c) {
+  EEPROM.write(EEP_USER_COUNT, c);
 }
-void alSalirInicio() {}
-void alEntrarBoton() {
-  estadoActual = E_BOTON; digitosIngresados = 0;
-  tiempoInicioInput = millis(); triggerTransicion = TRIG_NONE; teclaPresionada = false;
-  mostrarInfoEstado();
-}
-void alSalirBoton() { for (uint8_t i = 0; i < MAX_DIGITOS; i++) bufferPIN[i] = 0; digitosIngresados = 0; }
-void alEntrarClaveCorrecta() {
-  estadoActual = E_CLAVE_CORRECTA; triggerTransicion = TRIG_NONE;
-  tiempoEstado = millis() + T_DESBLOQUEO; encenderRele(); mostrarInfoEstado();
-}
-void alSalirClaveCorrecta() { apagarRele(); }
-void alEntrarConfig() {
-  estadoActual = E_CONFIG; triggerTransicion = TRIG_NONE;
-  nivelConfig = 0; opcionConfig = 0; pasoConfig = 0;
-  Serial.println(F("[CONFIG] 1=Usuario 2=Horario 3=Rol *=Salir"));
-}
-void alSalirConfig() { Serial.println(F("Configuracion guardada.")); }
-void alEntrarTiempo2Seg() {
-  estadoActual = E_TIEMPO_2_SEC; triggerTransicion = TRIG_NONE;
-  teclaPresionada = false; tiempoEstado = millis() + T_CONTEO; mostrarInfoEstado();
-}
-void alSalirTiempo2Seg() {}
-void alEntrarMonitorAmbiental() {
-  estadoActual = E_MONITOR_AMBIENTAL; triggerTransicion = TRIG_NONE;
-  tiempoEstado = millis() + T_AMBIENTAL; leerNTC(); leerLDR(); mostrarInfoEstado();
-}
-void alSalirMonitorAmbiental() {}
-void alEntrarSistemaBloqueado() {
-  estadoActual = E_SISTEMA_BLOQUEADO; contadorBloqueos++; mostrarInfoEstado();
-}
-void alSalirSistemaBloqueado() {}
-void alEntrarBloqueo() {
-  estadoActual = E_BLOQUEO; triggerTransicion = TRIG_NONE;
-  tiempoEstado = millis() + T_BLOQUEO; tiempoUltimoBlink = millis(); mostrarInfoEstado();
-}
-void alSalirBloqueo() { activarLEDAlarma(false); }
-void alEntrarAlarma() {
-  estadoActual = E_ALARMA; triggerTransicion = TRIG_NONE;
-  tiempoEstado = millis() + T_ALARMA; tiempoInicioAlarma = millis();
-  contadorDisparosAlarma = 0; tiempoUltimoBlink = millis(); activarBuzzer(true); mostrarInfoEstado();
-}
-void alSalirAlarma() { activarBuzzer(false); activarLEDAlarma(false); }
-void alEntrarMonitorIntrusos() {
-  estadoActual = E_MONITOR_INTRUSOS; triggerTransicion = TRIG_NONE;
-  tiempoEstado = millis() + T_INTRUSOS; leerHall(); leerMicrofono(); mostrarInfoEstado();
-}
-void alSalirMonitorIntrusos() {}
 
-// ========== PROCESAMIENTO DE ENTRADA ==========
-void procesarEntrada() {
-  char tecla = teclado.getKey();  // getKey() internamente hace scanKeys()
-  if (tecla == NO_KEY) { teclaPresionada = false; return; }
-  teclaPresionada = true;
+// Read a user record from EEPROM at given index
+void loadUser(uint8_t idx, char pin[5], uint8_t& role, uint8_t& uses,
+              bool& active, uint8_t& histIdx, char history[4][4]) {
+  uint16_t addr = EEP_USERS_START + idx * EEP_USER_SIZE;
+  for (uint8_t i = 0; i < 4; i++) pin[i] = EEPROM.read(addr + OFF_PIN + i);
+  pin[4] = '\0';
+  role    = EEPROM.read(addr + OFF_ROLE);
+  uses    = EEPROM.read(addr + OFF_USES);
+  active  = EEPROM.read(addr + OFF_ACTIVE) != 0;
+  histIdx = EEPROM.read(addr + OFF_HIST_IDX);
+  for (uint8_t h = 0; h < PIN_HIST_LEN; h++)
+    for (uint8_t i = 0; i < 4; i++)
+      history[h][i] = EEPROM.read(addr + OFF_HIST + h * 4 + i);
+  if (pin[0] < '0' || pin[0] > '9') active = false;
+}
 
-  if (estadoActual == E_BOTON) {
-    if (tecla >= '0' && tecla <= '9' && digitosIngresados < MAX_DIGITOS) {
-      bufferPIN[digitosIngresados++] = tecla;
-      mostrarInfoEstado();
-      if (digitosIngresados == MAX_DIGITOS) {
-        if (validarPIN(bufferPIN)) { triggerTransicion = TRIG_PIN_OK; }
-        else {
-          intentosFallidos++;
-          if (intentosFallidos >= 3) { triggerTransicion = TRIG_LOCKOUT; }
-          else { Serial.println(F("PIN incorrecto.")); digitosIngresados = 0; tiempoInicioInput = millis(); }
-        }
-      }
-    } else if (tecla == '#') {
-      if (digitosIngresados == 0) { triggerTransicion = TRIG_CONFIG; }
-      else {
-        if (validarPIN(bufferPIN)) { triggerTransicion = TRIG_PIN_OK; }
-        else {
-          intentosFallidos++;
-          if (intentosFallidos >= 3) { triggerTransicion = TRIG_LOCKOUT; }
-          else { Serial.println(F("PIN incorrecto.")); digitosIngresados = 0; tiempoInicioInput = millis(); }
-        }
-      }
-    } else if (tecla == '*') { triggerTransicion = TRIG_CANCEL; }
-  } else if (estadoActual == E_CONFIG) {
-    if (tecla == '*') { triggerTransicion = TRIG_SALIR_CONFIG; }
-    else { menuConfig(tecla); }
-  } else if (estadoActual == E_TIEMPO_2_SEC) {
-    // teclaPresionada se usa en la transición a INICIO
+// Save a user record to EEPROM at given index
+void saveUser(uint8_t idx, const char pin[5], uint8_t role, uint8_t uses,
+              bool active, uint8_t histIdx, const char history[4][4]) {
+  uint16_t addr = EEP_USERS_START + idx * EEP_USER_SIZE;
+  for (uint8_t i = 0; i < 4; i++) EEPROM.update(addr + OFF_PIN + i, pin[i]);
+  EEPROM.update(addr + OFF_ROLE, role);
+  EEPROM.update(addr + OFF_USES, uses);
+  EEPROM.update(addr + OFF_ACTIVE, active ? 1 : 0);
+  EEPROM.update(addr + OFF_HIST_IDX, histIdx);
+  for (uint8_t h = 0; h < PIN_HIST_LEN; h++)
+    for (uint8_t i = 0; i < 4; i++)
+      EEPROM.update(addr + OFF_HIST + h * 4 + i, history[h][i]);
+}
+
+// ============================================================================
+// ACCESS VALIDATION
+// ============================================================================
+// Find user index by PIN. Returns 0xFF if not found.
+uint8_t findUserByPin(const char* pin) {
+  uint8_t n = userCount();
+  for (uint8_t i = 0; i < n; i++) {
+    char sp[5]; uint8_t r, u, hi; bool a; char hist[4][4];
+    loadUser(i, sp, r, u, a, hi, hist);
+    if (!a) continue;
+    bool match = true;
+    for (uint8_t j = 0; j < 4; j++) { if (pin[j] != sp[j]) { match = false; break; } }
+    if (match) return i;
   }
+  return 0xFF;
 }
 
-// ========== MENÚ CONFIGURACIÓN ==========
-void menuConfig(char tecla) {
-  if (nivelConfig == 0) {
-    if (tecla >= '1' && tecla <= '3') {
-      opcionConfig = tecla - '0'; nivelConfig = 1; pasoConfig = 0;
-      memset(bufferConfig, 0, sizeof(bufferConfig));
-      if (opcionConfig == 1) Serial.println(F("Nro usuario (0-9):"));
-      else if (opcionConfig == 2) Serial.println(F("Nro usuario:"));
-      else Serial.println(F("Nro usuario (0-9):"));
-    }
+// Check if new PIN differs from current PIN and all history entries
+bool pinIsUnique(uint8_t userIdx, const char* newPin) {
+  char sp[5]; uint8_t r, u, hi; bool a; char hist[4][4];
+  loadUser(userIdx, sp, r, u, a, hi, hist);
+
+  // Check against current PIN
+  bool same = true;
+  for (uint8_t j = 0; j < 4; j++) { if (newPin[j] != sp[j]) { same = false; break; } }
+  if (same) return false;
+
+  // Check against history
+  for (uint8_t h = 0; h < PIN_HIST_LEN; h++) {
+    if (hist[h][0] < '0' || hist[h][0] > '9') continue;  // empty slot
+    same = true;
+    for (uint8_t j = 0; j < 4; j++) { if (newPin[j] != hist[h][j]) { same = false; break; } }
+    if (same) return false;
+  }
+  return true;
+}
+
+// Rotate PIN: push current PIN into history, store new PIN, reset uses
+void rotatePin(uint8_t userIdx, const char* newPin) {
+  char sp[5]; uint8_t r, u, hi; bool a; char hist[4][4];
+  loadUser(userIdx, sp, r, u, a, hi, hist);
+
+  // Push current PIN into history at histIdx
+  for (uint8_t i = 0; i < 4; i++) hist[hi][i] = sp[i];
+  hi = (hi + 1) % PIN_HIST_LEN;
+
+  // Save new PIN with uses=0
+  saveUser(userIdx, newPin, r, 0, true, hi, (const char(*)[4])hist);
+}
+
+// Validate PIN + role + time window. Returns true if access granted.
+// If uses reaches PIN_MAX_USES, still grants but sets pinChangeRequired.
+bool validateAccess(const char* pin) {
+  uint8_t idx = findUserByPin(pin);
+  if (idx == 0xFF) {
+    Serial.println(F("[AUTH] PIN not found"));
+    return false;
+  }
+
+  char sp[5]; uint8_t role, uses, hi; bool a; char hist[4][4];
+  loadUser(idx, sp, role, uses, a, hi, hist);
+
+  // Check role time window (always true in demo, structure ready for RTC)
+  if (role < 1 || role > 4) {
+    Serial.println(F("[AUTH] Invalid role"));
+    return false;
+  }
+
+  // Grant access, increment uses
+  uses++;
+  if (uses >= PIN_MAX_USES) {
+    // Force PIN change on next attempt
+    pinChangeRequired = true;
+    pinChangeUserIdx = idx;
+    saveUser(idx, sp, role, uses, true, hi, (const char(*)[4])hist);
+    Serial.println(F("[AUTH] PIN expired: change required after this access"));
   } else {
-    if (opcionConfig == 1) {  // Agregar/Editar usuario
-      if (pasoConfig == 0 && tecla >= '0' && tecla <= '9') {
-        bufferConfig[0] = tecla; pasoConfig = 1;
-        Serial.println(F("PIN 4 digitos:"));
-      } else if (pasoConfig == 1 && tecla >= '0' && tecla <= '9') {
-        uint8_t len = strlen(bufferConfig);
-        if (len < 4) { bufferConfig[len] = tecla; bufferConfig[len+1] = '\0'; Serial.print('*'); }
-        if (strlen(bufferConfig) == 4) {
-          Serial.println(); uint8_t idx = bufferConfig[0] - '0';
-          Usuario u; u.pin[0] = bufferConfig[1]; u.pin[1] = bufferConfig[2];
-          u.pin[2] = bufferConfig[3]; u.pin[3] = bufferConfig[4]; u.pin[4] = '\0';
-          u.rol = 1; u.usos = 0; u.activo = true;
-          escribirUsuario(idx, u);
-          if (idx >= EEPROM.read(DIR_CANT_USUARIOS)) EEPROM.write(DIR_CANT_USUARIOS, idx + 1);
-          Serial.print(F("Usuario ")); Serial.print(idx); Serial.print(F(" PIN: ")); Serial.println(u.pin);
-          nivelConfig = 0; alEntrarConfig();
-        }
+    saveUser(idx, sp, role, uses, true, hi, (const char(*)[4])hist);
+  }
+
+  Serial.print(F("[AUTH] Granted: user "));
+  Serial.print(idx);
+  Serial.print(F(" role "));
+  Serial.println(ROLE_NAMES[role]);
+  return true;
+}
+
+// ============================================================================
+// ACTUATOR HELPERS
+// ============================================================================
+void setLED(bool on)     { digitalWrite(PIN_LED, on ? HIGH : LOW); }
+void setBuzzer(bool on)  { digitalWrite(PIN_BUZZER, on ? HIGH : LOW); }
+void unlockDoor()        { doorServo.write(SRV_UNLOCKED); }
+void lockDoor()          { doorServo.write(SRV_LOCKED); }
+
+// ============================================================================
+// LCD DISPLAY — Per PRD section 8.1
+// ============================================================================
+void updateDisplay() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  switch (currentState) {
+    case S_INICIO: {
+      if (menuActive) {
+        lcd.print(F("CHANGE PIN"));
+        lcd.setCursor(0, 1);
+        if (menuStep == 0) lcd.print(F("Old PIN:"));
+        else if (menuStep == 1) lcd.print(F("New PIN:"));
+        else lcd.print(F("Confirm:"));
+        for (uint8_t i = 0; i < menuBufLen; i++) lcd.print('*');
+        for (uint8_t i = menuBufLen; i < PIN_MAX_LEN; i++) lcd.print('-');
+      } else if (pinLen > 0) {
+        lcd.print(F("IDLE"));
+        lcd.setCursor(0, 1);
+        for (uint8_t i = 0; i < PIN_MAX_LEN; i++) lcd.print(i < pinLen ? '*' : '-');
+        lcd.print(F(" #=ok"));
+      } else {
+        lcd.print(F("IDLE"));
+        lcd.setCursor(0, 1);
+        lcd.print(F("Enter PIN:"));
       }
-    } else if (opcionConfig == 2) {  // Configurar horario
-      if (pasoConfig == 0 && tecla >= '0' && tecla <= '9') { bufferConfig[0] = tecla; pasoConfig = 1; Serial.println(F("Hora inicio (0-23):")); }
-      else if (pasoConfig == 1 && tecla >= '0' && tecla <= '9') { bufferConfig[1] = tecla; pasoConfig = 2; Serial.println(F("Min inicio (0-59):")); }
-      else if (pasoConfig == 2 && tecla >= '0' && tecla <= '9') { bufferConfig[2] = tecla; pasoConfig = 3; Serial.println(F("Hora fin (0-23):")); }
-      else if (pasoConfig == 3 && tecla >= '0' && tecla <= '9') { bufferConfig[3] = tecla; pasoConfig = 4; Serial.println(F("Min fin (0-59):")); }
-      else if (pasoConfig == 4 && tecla >= '0' && tecla <= '9') {
-        bufferConfig[4] = tecla; pasoConfig = 5;
-        uint8_t cant = EEPROM.read(DIR_CANT_HORARIOS);
-        if (cant < MAX_HORARIOS) {
-          Horario h; h.indiceUsuario = bufferConfig[0] - '0';
-          h.horaInicio = bufferConfig[1] - '0'; h.minInicio = bufferConfig[2] - '0';
-          h.horaFin = bufferConfig[3] - '0'; h.minFin = bufferConfig[4] - '0';
-          h.dias = 0x7F; h.activo = true;
-          escribirHorario(cant, h); EEPROM.write(DIR_CANT_HORARIOS, cant + 1);
-          Serial.println(F("Horario guardado."));
-        } else Serial.println(F("Max horarios alcanzado."));
-        nivelConfig = 0; alEntrarConfig();
+      break;
+    }
+    case S_CONFIG: {
+      lcd.print(F("ACCESS GRANTED"));
+      unsigned long elapsed = millis() - stateEntryTime;
+      unsigned long rem = (elapsed < T_UNLOCK) ? (T_UNLOCK - elapsed) / 1000 : 0;
+      lcd.setCursor(0, 1);
+      lcd.print(F("OPEN "));
+      lcd.print(rem);
+      lcd.print('s');
+      break;
+    }
+    case S_BLOQUEO:
+      lcd.print(F("BLOCKED"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("Wait 5s..."));
+      break;
+    case S_MONITOR_AMBIENTAL: {
+      lcd.print(F("MONITOR ENV"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("T:"));
+      lcd.print((int)temperature);
+      lcd.print(F("C L:"));
+      lcd.print(lightLevel);
+      break;
+    }
+    case S_MONITOR_INTRUSOS:
+      lcd.print(F("MONITOR SEC"));
+      break;
+    case S_ALARMA:
+      lcd.print(F("!!! ALARM !!!"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("Intrusion!"));
+      break;
+  }
+}
+
+// ============================================================================
+// FSM STATE HANDLERS
+// ============================================================================
+void onEnterInicio() {
+  currentState = S_INICIO;
+  failCount = 0;
+  pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+  trig = TRIG_NONE;
+  menuActive = false; menuStep = 0; menuBufLen = 0; menuUserIdx = 0xFF;
+  blinkActive = false; setLED(LOW); setBuzzer(false);
+  lockDoor();
+  lastLcdUpdate = 0;  // Force LCD update
+  Serial.println(F("[STATE] INICIO — System ready"));
+}
+
+void onLeaveInicio() {
+  pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+  menuActive = false;
+}
+
+void onEnterConfig() {
+  currentState = S_CONFIG;
+  trig = TRIG_NONE;
+  stateEntryTime = millis();
+  unlockDoor();
+  Serial.println(F("[STATE] CONFIG — Door unlocked (2s)"));
+}
+
+void onLeaveConfig() {
+  lockDoor();
+  Serial.println(F("[STATE] CONFIG — Door locked"));
+}
+
+void onEnterBloqueo() {
+  currentState = S_BLOQUEO;
+  trig = TRIG_NONE;
+  stateEntryTime = millis();
+  blinkActive = true; blinkOnMs = BLK_ON; blinkOffMs = BLK_OFF;
+  lastBlink = millis(); ledOn = false;
+  Serial.println(F("[STATE] BLOQUEO — 3 failed attempts, 5s block"));
+}
+
+void onLeaveBloqueo() {
+  blinkActive = false; setLED(LOW);
+}
+
+void onEnterMonitorIntrusos() {
+  currentState = S_MONITOR_INTRUSOS;
+  trig = TRIG_NONE;
+  stateEntryTime = millis();
+  Serial.println(F("[STATE] MONITOR_INTRUSOS — Watching..."));
+}
+
+void onLeaveMonitorIntrusos() {}
+
+void onEnterMonitorAmbiental() {
+  currentState = S_MONITOR_AMBIENTAL;
+  trig = TRIG_NONE;
+  stateEntryTime = millis();
+  Serial.println(F("[STATE] MONITOR_AMBIENTAL — Temp + light"));
+}
+
+void onLeaveMonitorAmbiental() {}
+
+void onEnterAlarma() {
+  currentState = S_ALARMA;
+  trig = TRIG_NONE;
+  stateEntryTime = millis();
+  setBuzzer(true);
+  blinkActive = true; blinkOnMs = ALM_ON; blinkOffMs = ALM_OFF;
+  lastBlink = millis(); ledOn = false;
+  Serial.println(F("[STATE] ALARMA — Intrusion!"));
+}
+
+void onLeaveAlarma() {
+  setBuzzer(false);
+  blinkActive = false; setLED(LOW);
+}
+
+// ============================================================================
+// KEYPAD INPUT PROCESSING
+// ============================================================================
+void handleMenuKey(char key) {
+  if (key == '*') {
+    // Cancel menu
+    menuActive = false; menuStep = 0; menuBufLen = 0; menuUserIdx = 0xFF;
+    pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+    Serial.println(F("[MENU] Cancelled"));
+    return;
+  }
+
+  if (key == '#') {
+    if (menuStep == 0) {
+      // Old PIN entered — validate
+      menuBuf[menuBufLen] = '\0';
+      if (menuBufLen < PIN_MIN_LEN) {
+        Serial.println(F("[MENU] PIN too short"));
+        menuBufLen = 0;
+        return;
       }
-    } else if (opcionConfig == 3) {  // Asignar rol
-      if (pasoConfig == 0 && tecla >= '0' && tecla <= '9') {
-        bufferConfig[0] = tecla; pasoConfig = 1;
-        Serial.println(F("Rol: 0=Seg 1=Op 2=Coord 3=Ger"));
-      } else if (pasoConfig == 1 && tecla >= '0' && tecla <= '3') {
-        uint8_t idx = bufferConfig[0] - '0'; uint8_t rol = tecla - '0';
-        Usuario u = leerUsuario(idx);
-        if (u.activo) {
-          u.rol = rol; escribirUsuario(idx, u);
-          const char* roles[] = {"Seguridad","Operario","Coordinador","Gerente"};
-          Serial.print(F("Rol: ")); Serial.println(roles[rol]);
-        } else Serial.println(F("Usuario no existe."));
-        nivelConfig = 0; alEntrarConfig();
+      uint8_t idx = findUserByPin(menuBuf);
+      if (idx == 0xFF) {
+        Serial.println(F("[MENU] Wrong PIN"));
+        menuBufLen = 0;
+        return;
       }
+      menuUserIdx = idx;
+      menuStep = 1; menuBufLen = 0; memset(menuBuf, 0, sizeof(menuBuf));
+      Serial.println(F("[MENU] Enter new PIN (4-6 digits):"));
+    } else if (menuStep == 1) {
+      // New PIN entered — check length
+      menuBuf[menuBufLen] = '\0';
+      if (menuBufLen < PIN_MIN_LEN) {
+        Serial.println(F("[MENU] Too short (min 4)"));
+        menuBufLen = 0;
+        return;
+      }
+      // Check uniqueness
+      if (!pinIsUnique(menuUserIdx, menuBuf)) {
+        Serial.println(F("[MENU] PIN was used before. Choose another."));
+        menuBufLen = 0;
+        return;
+      }
+      // Save new PIN
+      rotatePin(menuUserIdx, menuBuf);
+      pinChangeRequired = false;
+      pinChangeUserIdx = 0xFF;
+      Serial.println(F("[MENU] PIN changed successfully!"));
+      menuActive = false; menuStep = 0; menuBufLen = 0;
+    }
+    return;
+  }
+
+  if (key >= '0' && key <= '9') {
+    if (menuBufLen < PIN_MAX_LEN) {
+      menuBuf[menuBufLen++] = key;
     }
   }
 }
 
-// ========== ACTUALIZACIÓN DE ESTADO ==========
-void actualizarEstado() {
-  switch (estadoActual) {
-    case E_MONITOR_AMBIENTAL:
-      if (leerNTC() || leerLDR()) triggerTransicion = TRIG_ALARMA;
-      break;
-    case E_MONITOR_INTRUSOS:
-      if (leerHall() || leerMicrofono()) triggerTransicion = TRIG_INTRUSION;
-      break;
-    case E_ALARMA:
-      if (millis() - tiempoUltimoBlink >= (estadoLED ? 700UL : 300UL)) {
-        tiempoUltimoBlink = millis(); estadoLED = !estadoLED; activarLEDAlarma(estadoLED);
+void handlePinEntry(char key) {
+  if (key >= '0' && key <= '9') {
+    if (pinLen < PIN_MAX_LEN) {
+      pinBuf[pinLen++] = key;
+      pinStartTime = millis();
+    }
+  } else if (key == '#') {
+    if (pinLen == 0) {
+      // Open PIN change menu
+      menuActive = true; menuStep = 0; menuBufLen = 0;
+      memset(menuBuf, 0, sizeof(menuBuf));
+      Serial.println(F("[MENU] Enter current PIN:"));
+    } else if (pinLen >= PIN_MIN_LEN) {
+      pinBuf[pinLen] = '\0';
+
+      // Check if PIN change is required for this user
+      if (pinChangeRequired) {
+        uint8_t idx = findUserByPin(pinBuf);
+        if (idx != 0xFF && idx == pinChangeUserIdx) {
+          Serial.println(F("[AUTH] PIN expired. Change via menu (# at IDLE)."));
+          pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+          return;
+        }
       }
-      if (leerHall() || leerMicrofono()) {
-        contadorDisparosAlarma++;
-        Serial.print(F("Disparo #")); Serial.println(contadorDisparosAlarma);
-        if (contadorDisparosAlarma >= 3 && (millis() - tiempoInicioAlarma) < T_TRIPLE) {
-          tiempoEstado = millis() + T_ALARMA; contadorDisparosAlarma = 0;
-          tiempoInicioAlarma = millis(); Serial.println(F("TRIPLE: Alarma rearmada"));
+
+      if (validateAccess(pinBuf)) {
+        trig = TRIG_AUTH_OK;
+      } else {
+        failCount++;
+        Serial.print(F("[AUTH] Failed attempt "));
+        Serial.println(failCount);
+        if (failCount >= 3) {
+          trig = TRIG_LOCKOUT;
+        } else {
+          pinLen = 0;
+          memset(pinBuf, 0, sizeof(pinBuf));
+        }
+      }
+    }
+  } else if (key == '*') {
+    pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+    Serial.println(F("[INPUT] Cancelled"));
+  }
+}
+
+void processInput() {
+  char key = keypad.getKey();
+
+  if (currentState == S_INICIO) {
+    if (key != NO_KEY) {
+      if (menuActive) {
+        handleMenuKey(key);
+      } else {
+        handlePinEntry(key);
+      }
+    }
+
+    // Check PIN timeout
+    if (pinLen > 0 && (millis() - pinStartTime) >= T_PIN_TIMEOUT) {
+      Serial.println(F("[INPUT] PIN timeout"));
+      pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+    }
+  }
+}
+
+// ============================================================================
+// STATE UPDATE — Per-loop logic
+// ============================================================================
+void updateState() {
+  unsigned long now = millis();
+
+  // --- State timing (millis-based) ---
+  if (trig == TRIG_NONE) {
+    unsigned long elapsed = now - stateEntryTime;
+    switch (currentState) {
+      case S_CONFIG:
+        if (elapsed >= T_UNLOCK) trig = TRIG_AUTH_OK;  // reuse to exit
+        break;
+      case S_BLOQUEO:
+        if (elapsed >= T_LOCKOUT) trig = TRIG_AUTH_OK;
+        break;
+      case S_MONITOR_AMBIENTAL:
+        if (elapsed >= T_ENV_MONITOR) trig = TRIG_AUTH_OK;
+        break;
+      case S_MONITOR_INTRUSOS:
+        if (elapsed >= T_INTRUSION) trig = TRIG_AUTH_OK;
+        break;
+      case S_ALARMA:
+        if (elapsed >= T_ALARM) trig = TRIG_AUTH_OK;
+        break;
+      default: break;
+    }
+  }
+
+  // --- Sensor reading (AsyncTaskLib driven) ---
+  // AsyncTask sensorTask handles analog reads in setup/loop Update
+  // Temperature calculated from averaged raw NTC values
+  if (tempAvg.getCount() > 0) {
+    float avgRaw = tempAvg.getAverage();
+    if (avgRaw <= 0) avgRaw = 1;
+    float R2 = R1 * (1023.0f / avgRaw - 1.0f);
+    float logR2 = log(R2);
+    temperature = (1.0f / (C1 + C2 * logR2 + C3 * logR2 * logR2 * logR2)) - 273.15f;
+  }
+  if (lightAvg.getCount() > 0) {
+    lightLevel = (int)lightAvg.getAverage();
+  }
+
+  // --- State-specific sensor monitoring ---
+  switch (currentState) {
+    case S_MONITOR_AMBIENTAL:
+      if ((temperature > 0 && temperature < TEMP_LOW) ||
+          temperature > TEMP_HIGH ||
+          (lightLevel > 0 && lightLevel < LIGHT_MIN)) {
+        trig = TRIG_ENV_ALARM;
+        Serial.print(F("[ENV] Threshold: T="));
+        Serial.print(temperature); Serial.print(F(" L=")); Serial.println(lightLevel);
+      }
+      break;
+
+    case S_MONITOR_INTRUSOS:
+      if (hallVal > HALL_OPEN || micVal > SOUND_HIGH) {
+        trig = TRIG_INTRUSION;
+        Serial.println(F("[INTRUSION] Detected!"));
+        // Only trigger once per INTRUSION state
+      }
+      break;
+
+    case S_ALARMA:
+      // Triple alarm detection within T_TRIPLE window
+      if (hallVal > HALL_OPEN || micVal > SOUND_HIGH) {
+        alarmCount++;
+        if (alarmCount == 1) firstAlarmTime = now;
+        Serial.print(F("[ALARM] Event #"));
+        Serial.println(alarmCount);
+        if (alarmCount >= 3 && (now - firstAlarmTime) < T_TRIPLE) {
+          Serial.println(F("[ALARM] Triple event!"));
+          // Reset the alarm timer for extended block
+          stateEntryTime = now;
+          alarmCount = 0;
         }
       }
       break;
-    case E_BLOQUEO:
-      if (millis() - tiempoUltimoBlink >= (estadoLED ? 500UL : 100UL)) {
-        tiempoUltimoBlink = millis(); estadoLED = !estadoLED; activarLEDAlarma(estadoLED);
-      }
-      break;
+
     default: break;
   }
+
+  // --- LED blink pattern ---
+  if (blinkActive) {
+    unsigned long interval = ledOn ? blinkOffMs : blinkOnMs;
+    if (now - lastBlink >= interval) {
+      lastBlink = now;
+      ledOn = !ledOn;
+      setLED(ledOn);
+    }
+  }
+
+  // --- LCD refresh (AsyncTaskLib driven in loop) ---
+  if (now - lastLcdUpdate >= LCD_INTERVAL) {
+    lastLcdUpdate = now;
+    updateDisplay();
+  }
 }
 
-// ========== SETUP ==========
+// ============================================================================
+// FSM CONFIGURATION
+// ============================================================================
+void setupFSM() {
+  // State entry handlers
+  fsm.SetOnEntering(S_INICIO, onEnterInicio);
+  fsm.SetOnEntering(S_CONFIG, onEnterConfig);
+  fsm.SetOnEntering(S_BLOQUEO, onEnterBloqueo);
+  fsm.SetOnEntering(S_MONITOR_INTRUSOS, onEnterMonitorIntrusos);
+  fsm.SetOnEntering(S_MONITOR_AMBIENTAL, onEnterMonitorAmbiental);
+  fsm.SetOnEntering(S_ALARMA, onEnterAlarma);
+
+  // State exit handlers
+  fsm.SetOnLeaving(S_INICIO, onLeaveInicio);
+  fsm.SetOnLeaving(S_CONFIG, onLeaveConfig);
+  fsm.SetOnLeaving(S_BLOQUEO, onLeaveBloqueo);
+  fsm.SetOnLeaving(S_MONITOR_INTRUSOS, onLeaveMonitorIntrusos);
+  fsm.SetOnLeaving(S_MONITOR_AMBIENTAL, onLeaveMonitorAmbiental);
+  fsm.SetOnLeaving(S_ALARMA, onLeaveAlarma);
+
+  // Transitions
+  // Auth OK (also used as "state timer done" for timed states)
+  fsm.AddTransition(S_INICIO, S_CONFIG, []() { return trig == TRIG_AUTH_OK; });
+
+  // 3 failed attempts
+  fsm.AddTransition(S_INICIO, S_BLOQUEO, []() { return trig == TRIG_LOCKOUT; });
+
+  // Timed states: any non-event trigger means time expired
+  auto timedDone = []() { return trig == TRIG_AUTH_OK; };
+  fsm.AddTransition(S_CONFIG, S_INICIO, timedDone);
+  fsm.AddTransition(S_BLOQUEO, S_INICIO, timedDone);
+  fsm.AddTransition(S_MONITOR_AMBIENTAL, S_INICIO, timedDone);
+  fsm.AddTransition(S_MONITOR_INTRUSOS, S_INICIO, timedDone);
+
+  // Threshold/intrusion events
+  fsm.AddTransition(S_MONITOR_AMBIENTAL, S_ALARMA, []() { return trig == TRIG_ENV_ALARM; });
+  fsm.AddTransition(S_MONITOR_INTRUSOS, S_ALARMA, []() { return trig == TRIG_INTRUSION; });
+
+  // Alarm -> intrusion monitoring when timer expires
+  fsm.AddTransition(S_ALARMA, S_MONITOR_INTRUSOS, timedDone);
+}
+
+// ============================================================================
+// ASYNCTASKLIB TASKS
+// ============================================================================
+// Sensor averaging task: reads analog sensors every SENSOR_INTERVAL ms
+constexpr unsigned long SENSOR_INTERVAL = 200;
+AsyncTask sensorTask(SENSOR_INTERVAL, true, []() {
+  int ntc = analogRead(PIN_NTC);
+  int ldr = analogRead(PIN_LDR);
+  hallVal = analogRead(PIN_HALL);
+  micVal  = analogRead(PIN_MIC);
+
+  // Add to running averages
+  tempAvg.add(ntc);
+  lightAvg.add(ldr);
+});
+
+// ============================================================================
+// SETUP
+// ============================================================================
 void setup() {
   Serial.begin(9600);
-  randomSeed(analogRead(A0));
-  pinMode(PIN_LED_ROJO, OUTPUT); pinMode(PIN_BUZZER, OUTPUT);
-  pinMode(PIN_RELE, OUTPUT); pinMode(PIN_LED_BUILTIN, OUTPUT);
-  digitalWrite(PIN_LED_ROJO, LOW); digitalWrite(PIN_BUZZER, LOW);
-  digitalWrite(PIN_RELE, LOW); digitalWrite(PIN_LED_BUILTIN, LOW);
-#ifdef USE_LCD
-  lcd.init(); lcd.backlight(); lcd.clear();
-  lcd.print(F("Sistema Acceso")); lcd.setCursor(0,1); lcd.print(F("Iniciando..."));
-#endif
-  initEEPROM(); leerPinMaestroEEPROM();
-  Serial.println(F("=== CONTROL ACCESO Y SEGURIDAD ==="));
-  Serial.print(F("PIN maestro: ")); Serial.println(pinMaestro);
-  Serial.println(F("Teclas: [0-9]=digito [#]=ok [*]=cancel"));
-  configurarFSM();
-  fsm.SetState(E_INICIO, false, true);
+  randomSeed(analogRead(PIN_MIC));
+
+  // Pin modes
+  pinMode(PIN_LED, OUTPUT); digitalWrite(PIN_LED, LOW);
+  pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
+
+  // Servo
+  doorServo.attach(PIN_SERVO);
+  doorServo.write(SRV_LOCKED);
+
+  // LCD
+  lcd.begin(16, 2);
+  lcd.print(F("Access Control"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("Starting..."));
+
+  // EEPROM
+  initEEPROM();
+
+  // Start AsyncTask sensor averaging
+  sensorTask.Start();
+
+  // FSM
+  setupFSM();
+  fsm.SetState(S_INICIO, false, true);
+
+  Serial.println(F("=== ACCESS CONTROL & SECURITY ==="));
+  Serial.println(F("Keys: [0-9]=digit [#]=ok [*]=cancel"));
+  Serial.println(F("From IDLE: # with no digits = change PIN"));
 }
 
-// ========== LOOP ==========
+// ============================================================================
+// LOOP
+// ============================================================================
 void loop() {
-  procesarEntrada();
-  actualizarEstado();
+  processInput();
+  updateState();
+
+  // Update AsyncTaskLib periodic tasks
+  sensorTask.Update();
+
+  // Update FSM (state transition checks)
   fsm.Update();
 }

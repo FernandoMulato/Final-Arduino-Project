@@ -1,62 +1,51 @@
 @startuml BloqueoIntentos
 ' ====================================================================
-' Diagrama de secuencia - Bloqueo por 3 intentos fallidos
-' PIN incorrecto x3 -> SISTEMA_BLOQUEADO -> BLOQUEO 4s -> reposo
+' Sequence diagram - Block after 3 failed attempts
+' PIN incorrect x3 -> BLOQUEO 5s (LED 300/700ms) -> INICIO
 ' ====================================================================
 
 skinparam backgroundColor white
 skinparam defaultFontName SansSerif
 skinparam sequenceMessageAlign center
 
-actor "Usuario" as USR #FFFACD
-participant "Keypad\n4x4" as TEC #D4E6F1
-participant "Sistema\n(loop)" as SYS #FFCCCC
+actor "User" as USR #FFFACD
+participant "Keypad\n4x4" as KPD #D4E6F1
+participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
-participant "LED Rojo\nD10" as LEDR #FADBD8
+participant "Red LED\nD10" as LED #FADBD8
+participant "LCD\n16x2" as LCD #D4E6F1
 
-== BOTON - intentos fallidos ==
+== INICIO - failed attempts ==
 
-loop 3 intentos fallidos
-  USR -> TEC: Ingresa PIN incorrecto
-  TEC -> SYS: getKey() = digitos + '#'
-  SYS -> EEP: leerPinMaestro()
-  EEP --> SYS: "1234"
-  SYS -> SYS: validarPIN() = false
-  SYS -> SYS: intentosFallidos++
-  note right: PIN incorrecto.\nIntento #{x}
-  SYS -> SYS: bufferPIN = "", reinicia input
+loop 3 failed attempts
+  USR -> KPD: Enters wrong PIN + '#'
+  KPD -> SYS: getKey() = digits + #
+  SYS -> EEP: loadUser() - find PIN
+  EEP --> SYS: PIN not found
+  SYS -> SYS: failCount++
+  note right: LCD: "IDLE"\n"ERR" briefly\nfailCount = #{x}
 end
 
-SYS -> SYS: intentosFallidos >= 3
-SYS -> FSM: trigger = TRIG_LOCKOUT
+SYS -> SYS: failCount >= 3
+SYS -> FSM: trig = TRIG_LOCKOUT
+FSM -> SYS: Transition to S_BLOQUEO
+SYS -> SYS: onEnterBloqueo()
+SYS -> LED: blink active (300/700ms)
+LCD -> SYS: "BLOCKED"\n"Wait 5s..."
 
-FSM -> SYS: Transicion a E_SISTEMA_BLOQUEADO
-SYS -> SYS: alEntrarSistemaBloqueado()
-SYS -> SYS: contadorBloqueos++
-note right: "SISTEMA BLOQUEADO\n3 intentos fallidos"
-
-FSM -> SYS: Update() - transicion inmediata
-FSM -> SYS: Transicion a E_BLOQUEO
-
-== BLOQUEO - LED blink 4 segundos ==
-SYS -> SYS: alEntrarBloqueo()
-note right: tiempoEstado = millis() + 4000ms
-
-loop ~7 ciclos (100ms on / 500ms off)
-  SYS -> LEDR: HIGH (100ms)
-  note right: 100ms
-  SYS -> LEDR: LOW (500ms)
-  note right: 500ms
+== BLOQUEO - LED blink 5 seconds ==
+note right: T_LOCKOUT = 5000ms
+loop ~6 cycles of 300ms ON / 700ms OFF
+  SYS -> LED: ON (300ms)
+  SYS -> LED: OFF (700ms)
 end
 
-FSM -> SYS: Update() - 4s cumplidos
-SYS -> SYS: alSalirBloqueo()
-SYS -> LEDR: LOW
-note right: LED apagado
-
-FSM -> SYS: Transicion a E_INICIO
-SYS -> SYS: alEntrarInicio()
-note right: intentosFallidos = 0\nSistema restablecido
+FSM -> SYS: trig = TRIG_AUTH_OK (5s expired)
+SYS -> SYS: onLeaveBloqueo()
+SYS -> LED: off
+FSM -> SYS: Transition to S_INICIO
+SYS -> SYS: onEnterInicio()
+note right: failCount = 0\nSystem restored
 
 @enduml

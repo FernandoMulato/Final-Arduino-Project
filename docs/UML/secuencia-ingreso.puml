@@ -1,89 +1,63 @@
 @startuml IngresoExitoso
 ' ====================================================================
-' Diagrama de secuencia - Ingreso exitoso con PIN valido
-' Happy path: PIN correcto -> desbloqueo 2s -> monitoreo -> reposo
+' Sequence diagram - Successful PIN entry
+' Happy path: correct PIN + role in window -> CONFIG -> unlock 2s -> INICIO
 ' ====================================================================
 
 skinparam backgroundColor white
 skinparam defaultFontName SansSerif
 skinparam sequenceMessageAlign center
 
-actor "Usuario" as USR #FFFACD
-participant "Keypad\n4x4" as TEC #D4E6F1
-participant "Sistema\n(loop)" as SYS #FFCCCC
+actor "User" as USR #FFFACD
+participant "Keypad\n4x4" as KPD #D4E6F1
+participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
-participant "Relay\nD12" as REL #FADBD8
-participant "LED\nD13" as LED #FADBD8
-participant "LED Rojo\nD10" as LEDR #FADBD8
-participant "Buzzer\nD11" as BUZ #FADBD8
+participant "Servo\nD12" as SRV #FADBD8
+participant "LCD\n16x2" as LCD #D4E6F1
 participant "NTC\nA1" as NTC #D5F5E3
 participant "LDR\nA2" as LDR #D5F5E3
 
-== INICIO - esperando tecla ==
+== INICIO - idle, waiting ==
 SYS -> FSM: Update()
-note right: Estado E_INICIO\nSistema en reposo
+note right: State S_INICIO\nLCD: "IDLE"\n"Enter PIN:"
 
-USR -> TEC: Presiona '1'
-TEC -> SYS: getKey() = '1'
-SYS -> FSM: teclaPresionada = true
-FSM -> SYS: Transicion a E_BOTON
-SYS -> SYS: alEntrarBoton()
-SYS -> SYS: mostrarInfoEstado()
-note right: "[PIN] ----   #=ok *=cancel"
+USR -> KPD: Presses '1','2','3','4'
+KPD -> SYS: getKey() = digits
+SYS -> SYS: pinBuf = "1234", pinLen = 4
+note right: LCD: "IDLE"\n"**** #=ok"
 
-USR -> TEC: Presiona '2','3','4'
-TEC -> SYS: getKey() = '2','3','4'
-SYS -> SYS: bufferPIN = "1234", digitos = 4
+USR -> KPD: Presses '#' (confirm)
+KPD -> SYS: getKey() = '#'
+SYS -> SYS: validateAccess("1234")
+SYS -> EEP: loadUser() - find PIN
+EEP --> SYS: Found: user 0, role 2
+SYS -> SYS: isInTimeWindow(2) = true
+SYS -> SYS: uses++, saveUser()
+note right: access GRANTED
 
-USR -> TEC: Presiona '#' (confirmar)
-TEC -> SYS: getKey() = '#'
+SYS -> FSM: trig = TRIG_AUTH_OK
+FSM -> SYS: Transition to S_CONFIG
+SYS -> SYS: onEnterConfig()
+SYS -> SRV: write(SRV_UNLOCKED) 90 deg
+note right: Door unlocked\n2 seconds
+SYS -> LCD: "ACCESS GRANTED"\n"OPEN 2s"
 
-SYS -> SYS: validarPIN("1234")
-SYS -> EEP: leerPinMaestro()
-EEP --> SYS: "1234"
-SYS -> SYS: PIN OK
-
-SYS -> FSM: trigger = TRIG_PIN_OK
-FSM -> SYS: Transicion a E_CLAVE_CORRECTA
-SYS -> SYS: alEntrarClaveCorrecta()
-SYS -> REL: encender()
-SYS -> LED: HIGH
-note right: Cerradura abierta\n2 segundos
-
-== CLAVE_CORRECTA - espera 2s ==
-FSM -> SYS: Update() - millis() >= tiempoEstado
-FSM -> SYS: Transicion a E_TIEMPO_2_SEC
-SYS -> SYS: alEntrarTiempo2Seg()
-SYS -> REL: apagar()
-SYS -> LED: LOW
-note right: Countdown 2 segundos
-
-== TIEMPO_2_SEC - cuenta regresiva ==
-FSM -> SYS: Update() - millis() >= tiempoEstado
-FSM -> SYS: Transicion a E_MONITOR_AMBIENTAL
-SYS -> SYS: alEntrarMonitorAmbiental()
-
-== MONITOR_AMBIENTAL - 3 segundos ==
-SYS -> NTC: leerNTC()
-NTC --> SYS: 24.5 C
-note right: Dentro de rango\n20 C < 24.5 < 50 C
-
-SYS -> LDR: leerLDR()
-LDR --> SYS: 450
-note right: Sobre umbral\n450 > 100
-
-loop cada iteracion del loop
-  SYS -> SYS: actualizarEstado()
-  note right: Sin novedad\nUmbrales OK
+== CONFIG - unlock countdown ==
+loop each loop iteration
+  SYS -> SYS: updateState() - check timer
+  note right: elapsed >= 2000ms?
 end
 
-FSM -> SYS: Update() - 3s sin novedad
-FSM -> SYS: Transicion a E_INICIO
-SYS -> SYS: alEntrarInicio()
-note right: Sistema vuelve a reposo
+FSM -> SYS: trig = TRIG_AUTH_OK (timer)
+FSM -> SYS: Transition to S_INICIO
+SYS -> SYS: onLeaveConfig()
+SYS -> SRV: write(SRV_LOCKED) 0 deg
+SYS -> SYS: onEnterInicio()
+note right: System back to idle
 
-== INICIO - esperando nueva tecla ==
-note right: Ciclo completado
+== INICIO - cycle complete ==
+LCD -> SYS: "IDLE"\n"Enter PIN:"
+note right: Ready for next access
 
 @enduml

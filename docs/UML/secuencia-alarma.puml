@@ -1,70 +1,67 @@
 @startuml IntrusionAlarma
 ' ====================================================================
-' Diagrama de secuencia - Intrusion y alarma
-' Sensor Hall -> ALARMA -> MONITOR_INTRUSOS -> rearme triple -> reposo
+' Sequence diagram - Intrusion and alarm
+' Hall sensor -> ALARMA (2s, 100/500ms) -> MONITOR_INTRUSOS -> INICIO
 ' ====================================================================
 
 skinparam backgroundColor white
 skinparam defaultFontName SansSerif
 skinparam sequenceMessageAlign center
 
-participant "Sensor Hall\nA3" as HALL #D5F5E3
-participant "Microfono\nA0" as MIC #D5F5E3
-participant "Sistema\n(loop)" as SYS #FFCCCC
+participant "Hall Sensor\nA3" as HALL #D5F5E3
+participant "Microphone\nA0" as MIC #D5F5E3
+participant "System\n(loop)" as SYS #FFCCCC
+participant "AsyncTask\nsensorTask" as ASYNC #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
-participant "LED Rojo\nD10" as LEDR #FADBD8
+participant "Red LED\nD10" as LED #FADBD8
 participant "Buzzer\nD11" as BUZ #FADBD8
 
-== MONITOR_AMBIENTAL - deteccion de intrusion ==
-HALL -> SYS: leerHall() = 612
-note right: Umbral > 512\nPuerta abierta!
-SYS -> SYS: trigger = TRIG_ALARMA
+== MONITOR_INTRUSOS - waiting ==
+note right: State S_MONITOR_INTRUSOS\nLCD: "MONITOR SEC"
 
-FSM -> SYS: Update()
-FSM -> SYS: Transicion a E_ALARMA
-SYS -> SYS: alEntrarAlarma()
-SYS -> BUZ: HIGH
-note right: Alarma activada\nDuracion: 5 segundos
-
-== ALARMA - patron LED + Buzzer ==
-loop Patron LED (300ms on / 700ms off)
-  SYS -> LEDR: HIGH (300ms)
-  SYS -> LEDR: LOW (700ms)
-  note right: Buzzer siempre ON\ndurante ALARMA
+loop each sensorTask tick (200ms)
+  ASYNC -> HALL: analogRead(PIN_HALL)
+  ASYNC -> MIC: analogRead(PIN_MIC)
+  HALL --> SYS: hallVal = 612
+  note right: Threshold > 512\nDoor opened!
+  SYS -> SYS: trig = TRIG_INTRUSION
 end
 
-MIC -> SYS: leerMicrofono() = 850
-note right: Sonido detectado > 800
-SYS -> SYS: contadorDisparosAlarma = 1
+FSM -> SYS: Update()
+FSM -> SYS: Transition to S_ALARMA
+SYS -> SYS: onEnterAlarma()
+SYS -> BUZ: HIGH
+SYS -> LED: blink active (100/500ms)
+note right: Alarm activated\nDuration: 2 seconds
 
-HALL -> SYS: leerHall() = 600
-note right: Puerta sigue abierta
-SYS -> SYS: contadorDisparosAlarma = 2
+== ALARMA - blink + buzzer ==
+loop until timer expires
+  SYS -> SYS: Blink: LED 100ms ON / 500ms OFF
+  note right: Buzzer always ON\nduring ALARMA
+end
 
-MIC -> SYS: leerMicrofono() = 920
-SYS -> SYS: contadorDisparosAlarma = 3
-note right: 3 disparos en menos de 12s
+MIC -> SYS: micVal > 800 (sonic event)
+SYS -> SYS: alarmCount = 1
+HALL -> SYS: hallVal > 512 (door open)
+SYS -> SYS: alarmCount = 2
+MIC -> SYS: micVal > 800
+SYS -> SYS: alarmCount = 3
+note right: 3 events in <12s = TRIPLE!\nAlarm timer reset
 
-SYS -> SYS: REARME: tiempoEstado = millis() + 5s
-note right: Alarma reiniciada\npor otros 5 segundos
-
-FSM -> SYS: Update() - millis() >= tiempoEstado
-FSM -> SYS: Transicion a E_MONITOR_INTRUSOS
-SYS -> SYS: alSalirAlarma()
+FSM -> SYS: trig = TRIG_AUTH_OK (2s expired)
+FSM -> SYS: Transition to S_MONITOR_INTRUSOS
+SYS -> SYS: onLeaveAlarma()
 SYS -> BUZ: LOW
-SYS -> LEDR: LOW
-note right: Buzzer y LED apagados
+SYS -> LED: off
 
-== MONITOR_INTRUSOS - vigilancia 2s ==
-HALL -> SYS: leerHall() = 520
-note right: Por debajo de umbral\nPuerta cerrada
+== MONITOR_INTRUSOS - 2s watch ==
+HALL --> SYS: hallVal = 420 (door closed)
+MIC --> SYS: micVal = 350 (no sound)
+SYS -> SYS: No intrusion - timer expires
 
-MIC -> SYS: leerMicrofono() = 450
-note right: Sin deteccion
-
-FSM -> SYS: Update() - 2s sin novedad
-FSM -> SYS: Transicion a E_INICIO
-SYS -> SYS: alEntrarInicio()
-note right: Sistema restablecido
+FSM -> SYS: trig = TRIG_AUTH_OK (2s)
+FSM -> SYS: Transition to S_INICIO
+SYS -> SYS: onEnterInicio()
+note right: System restored
 
 @enduml

@@ -1,68 +1,61 @@
 @startuml ConfigUsuario
 ' ====================================================================
-' Diagrama de secuencia - Configuracion: alta de usuario
-' CONFIG menu -> agregar usuario con PIN -> guardar en EEPROM -> reposo
+' Sequence diagram - PIN change via menu (within INICIO state)
+' From INICIO, press # with no digits -> menu -> change PIN -> save
 ' ====================================================================
 
 skinparam backgroundColor white
 skinparam defaultFontName SansSerif
 skinparam sequenceMessageAlign center
 
-actor "Usuario" as USR #FFFACD
-participant "Keypad\n4x4" as TEC #D4E6F1
-participant "Sistema\n(loop)" as SYS #FFCCCC
+actor "User" as USR #FFFACD
+participant "Keypad\n4x4" as KPD #D4E6F1
+participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
-participant "StateMachine" as FSM #B3D9FF
+participant "LCD\n16x2" as LCD #D4E6F1
 
-== BOTON - acceso a CONFIG ==
-USR -> TEC: Presiona '#' (sin digitos)
-TEC -> SYS: getKey() = '#'
-SYS -> SYS: digitosIngresados == 0
-SYS -> FSM: trigger = TRIG_CONFIG
+== INICIO - entering menu mode ==
+note right: State S_INICIO\nLCD: "IDLE", "Enter PIN:"
 
-FSM -> SYS: Transicion a E_CONFIG
-SYS -> SYS: alEntrarConfig()
-note right
-  Menu principal:
-  1=Usuario, 2=Horario
-  3=Rol, [*]=Salir
-end note
+USR -> KPD: Presses '#' (no digits entered)
+KPD -> SYS: getKey() = '#'
+SYS -> SYS: pinLen == 0 -> menu mode
+SYS -> SYS: menuActive = true, menuStep = 0
+LCD -> SYS: "CHANGE PIN"\n"Old PIN:****"
 
-== Menu - opcion 1: Usuario ==
-USR -> TEC: Presiona '1'
-TEC -> SYS: getKey() = '1'
-SYS -> SYS: opcionConfig = 1
-SYS -> SYS: "Nro usuario (0-9):"
+== Menu Step 0: Enter old PIN ==
+USR -> KPD: Presses '1','2','3','4'
+KPD -> SYS: getKey() = digits
+SYS -> SYS: menuBuf = "1234", menuBufLen = 4
 
-USR -> TEC: Presiona '5'
-TEC -> SYS: getKey() = '5'
-SYS -> SYS: bufferConfig[0] = 5, pasoConfig = 1
-SYS -> SYS: "PIN 4 digitos:"
+USR -> KPD: Presses '#' (confirm old PIN)
+KPD -> SYS: getKey() = '#'
+SYS -> EEP: findUserByPin("1234")
+EEP --> SYS: userIdx = 2
+SYS -> SYS: menuUserIdx = 2, menuStep = 1
+LCD -> SYS: "CHANGE PIN"\n"New PIN:----"
 
-== Ingreso de PIN ==
-USR -> TEC: Presiona '1'
-TEC -> SYS: getKey() = '1'
-SYS -> SYS: bufferConfig[1] = 1
+== Menu Step 1: Enter new PIN ==
+USR -> KPD: Presses '5','6','7','8'
+KPD -> SYS: getKey() = digits
+SYS -> SYS: menuBuf = "5678", menuBufLen = 4
 
-USR -> TEC: Presiona '2','3','4'
-TEC -> SYS: getKey() = 2,3,4
-SYS -> SYS: bufferConfig = "51234"
+USR -> KPD: Presses '#' (confirm new PIN)
+KPD -> SYS: getKey() = '#'
+SYS -> SYS: pinIsUnique(2, "5678") = true
+note right: Checked against current\nPIN + 4 history entries
+SYS -> EEP: rotatePin(2, "5678")
+note right: saveUser(userIdx, newPin,\nrole, uses=0, histIdx+1,\noldPin pushed to history[histIdx])
+SYS -> SYS: menuActive = false
+LCD -> SYS: "PIN changed"\n"Enter PIN:"
+SYS -> Serial: "[MENU] PIN changed successfully!"
+note right: pinChangeRequired flag\ncleared if was set
 
-SYS -> SYS: Crear Usuario { pin="1234", rol=1, usos=0, activo=true }
-SYS -> EEP: escribirUsuario(5, usuario)
-note right: Guarda en addr 42-49
-SYS -> EEP: actualizar cantUsuarios si necesario
-
-SYS -> SYS: nivelConfig = 0
-SYS -> SYS: alEntrarConfig()
-note right: Vuelve al menu\n"Usuario 5 PIN: 1234"
-
-== Salir de config ==
-USR -> TEC: Presiona '*'
-TEC -> SYS: getKey() = '*'
-SYS -> FSM: trigger = TRIG_SALIR_CONFIG
-FSM -> SYS: Transicion a E_INICIO
-SYS -> SYS: alEntrarInicio()
-note right: "Configuracion guardada"\nSistema en reposo
+== Alternative: Cancel ==
+USR -> KPD: Presses '*'
+KPD -> SYS: getKey() = '*'
+SYS -> SYS: menuActive = false, menuStep = 0
+LCD -> SYS: "IDLE"\n"Enter PIN:"
+note right: Any time during menu\n'*' cancels and returns\nto idle INICIO
 
 @enduml
