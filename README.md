@@ -371,11 +371,11 @@ Arduino-Project/
 │       ├── secuencia-alarma.puml
 │       ├── secuencia-bloqueo.puml
 │       └── secuencia-config.puml
-├── openspec/                  # SDD artifacts
+├── openspec/                  # Project specs and documentation
 ├── scripts/
 │   └── build.sh              # Build script
 ├── platformio.ini             # PlatformIO config
-├── AGENTS.md                  # AI agent instructions
+├── AGENTS.md                  # Project guidelines and conventions
 └── README.md                  # This file
 ```
 
