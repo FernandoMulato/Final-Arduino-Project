@@ -50,11 +50,14 @@ constexpr uint8_t PIN_SERVO  = 12;   // Servo lock
 constexpr uint8_t LCD_RS = 22, LCD_EN = 23;
 constexpr uint8_t LCD_D4 = 24, LCD_D5 = 25, LCD_D6 = 26, LCD_D7 = 27;
 
-// Analog sensors (A0-A3 on Mega)
+// Analog sensors (A0-A2 on Mega)
 constexpr uint8_t PIN_MIC  = A0;   // Sound sensor KY-037
 constexpr uint8_t PIN_NTC  = A1;   // Temperature KY-013
 constexpr uint8_t PIN_LDR  = A2;   // Photoresistor KY-018
-constexpr uint8_t PIN_HALL = A3;   // Hall sensor KY-035
+
+// Digital sensor — interrupt-driven door detection
+// D21 = INT2 on Mega: attachInterrupt(digitalPinToInterrupt(21), doorISR, CHANGE)
+constexpr uint8_t PIN_HALL_DOOR = 21;  // Door reed switch (INT2, attachInterrupt)
 
 // ============================================================================
 // TIMING CONSTANTS (ms) — Per PRD
@@ -80,7 +83,6 @@ constexpr float TEMP_LOW     = 20.0f;
 constexpr float TEMP_HIGH    = 50.0f;
 constexpr int   LIGHT_MIN    = 100;
 constexpr int   SOUND_HIGH   = 800;
-constexpr int   HALL_OPEN    = 512;
 
 // ============================================================================
 // PIN CONSTANTS
@@ -201,7 +203,9 @@ unsigned long stateEntryTime = 0;
 Trigger trig = TRIG_NONE;
 
 // Sensor data
-int hallVal = 0, micVal = 0;
+volatile bool doorChanged = false;  // Set by ISR on door pin change
+bool hallDoorOpen = false;          // Current door state (processed from doorChanged)
+int micVal = 0;
 float temperature = 0.0f;
 int lightLevel = 0;
 
@@ -225,6 +229,15 @@ uint8_t pinChangeUserIdx = 0xFF;
 // LCD update
 unsigned long lastLcdUpdate = 0;
 constexpr unsigned long LCD_INTERVAL = 250;
+
+// ============================================================================
+// INTERRUPT SERVICE ROUTINES
+// ============================================================================
+// Door pin ISR — fires on any CHANGE (open or close).
+// Minimal: just sets a flag. The main loop processes it.
+void doorISR() {
+  doorChanged = true;
+}
 
 // ============================================================================
 // FORWARD DECLARATIONS
@@ -663,6 +676,14 @@ void processInput() {
 void updateState() {
   unsigned long now = millis();
 
+  // --- Process interrupt flags ---
+  // Door ISR fires on CHANGE; update hallDoorOpen with current state.
+  // NOTE: we READ doorChanged but do NOT clear it here — state-specific
+  // handlers (e.g. ALARM) consume it for edge-triggered event counting.
+  if (doorChanged) {
+    hallDoorOpen = digitalRead(PIN_HALL_DOOR) == HIGH;
+  }
+
   // --- State timing (millis-based) ---
   if (trig == TRIG_NONE) {
     unsigned long elapsed = now - stateEntryTime;
@@ -713,26 +734,43 @@ void updateState() {
       break;
 
     case S_INTRUSION_MONITOR:
-      if (hallVal > HALL_OPEN || micVal > SOUND_HIGH) {
+      // Door state updated via interrupt (hallDoorOpen), mic via polling
+      if (hallDoorOpen || micVal > SOUND_HIGH) {
         trig = TRIG_INTRUSION;
-        Serial.println(F("[INTRUSION] Detected!"));
-        // Only trigger once per INTRUSION state
+        if (hallDoorOpen) {
+          doorChanged = false;  // Consume event so ALARM doesn't double-count
+          Serial.println(F("[INTRUSION] Door opened!"));
+        }
+        if (micVal > SOUND_HIGH) Serial.println(F("[INTRUSION] Sound detected!"));
       }
       break;
 
     case S_ALARM:
       // Triple alarm detection within T_TRIPLE window
-      if (hallVal > HALL_OPEN || micVal > SOUND_HIGH) {
+      // doorChanged is edge-triggered (ISR fires on CHANGE), so only
+      // counts DOOR events when the door physically changes state
+      if (doorChanged) {
+        doorChanged = false;
+        hallDoorOpen = digitalRead(PIN_HALL_DOOR) == HIGH;
+        if (hallDoorOpen) {
+          alarmCount++;
+          if (alarmCount == 1) firstAlarmTime = now;
+          Serial.print(F("[ALARM] Door event #"));
+          Serial.println(alarmCount);
+        }
+      }
+      // Mic is polled (level-based)
+      if (micVal > SOUND_HIGH) {
         alarmCount++;
         if (alarmCount == 1) firstAlarmTime = now;
-        Serial.print(F("[ALARM] Event #"));
+        Serial.print(F("[ALARM] Sound event #"));
         Serial.println(alarmCount);
-        if (alarmCount >= 3 && (now - firstAlarmTime) < T_TRIPLE) {
-          Serial.println(F("[ALARM] Triple event!"));
-          // Reset the alarm timer for extended block
-          stateEntryTime = now;
-          alarmCount = 0;
-        }
+      }
+      if (alarmCount >= 3 && (now - firstAlarmTime) < T_TRIPLE) {
+        Serial.println(F("[ALARM] Triple event!"));
+        // Reset the alarm timer for extended block
+        stateEntryTime = now;
+        alarmCount = 0;
       }
       break;
 
@@ -806,7 +844,6 @@ constexpr unsigned long SENSOR_INTERVAL = 200;
 AsyncTask sensorTask(SENSOR_INTERVAL, true, []() {
   int ntc = analogRead(PIN_NTC);
   int ldr = analogRead(PIN_LDR);
-  hallVal = analogRead(PIN_HALL);
   micVal  = analogRead(PIN_MIC);
 
   // Add to running averages
@@ -824,6 +861,12 @@ void setup() {
   // Pin modes
   pinMode(PIN_LED, OUTPUT); digitalWrite(PIN_LED, LOW);
   pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
+
+  // Door interrupt: reed switch on D21 (INT2), INPUT_PULLUP
+  // Normally closed with magnet (door shut) = LOW
+  // Open with no magnet (door opened) = HIGH
+  pinMode(PIN_HALL_DOOR, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_HALL_DOOR), doorISR, CHANGE);
 
   // Servo
   doorServo.attach(PIN_SERVO);

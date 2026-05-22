@@ -20,12 +20,12 @@ conditions (temperature, light) with sensor averaging.
 |-----------|-------|
 | Microcontroller | ATmega2560 (Arduino Mega) |
 | Frequency | 16 MHz |
-| SRAM | 8 KB (725 B used — 8.9%) |
-| Flash | 248 KB (16.5 KB used — 6.5%) |
+| SRAM | 8 KB (741 B used — 9.0%) |
+| Flash | 248 KB (17.4 KB used — 7.0%) |
 | EEPROM | 4 KB |
 | Language | C++ (Arduino framework) |
 | Libraries | StateMachineLib, AsyncTaskLib, Keypad 3.1.1, Servo, LiquidCrystal, RunningAverage |
-| Files | 1 (`src/main.ino`, ~560 lines) |
+| Files | 1 (`src/main.ino`, ~585 lines) |
 
 ---
 
@@ -110,12 +110,15 @@ Hall or microphone trigger → ALARM (2s, buzzer + LED) → INTRUSION_MONITOR �
 | ![IntrusionAlarm](docs/UML/IntrusionAlarm.png) |
 
 **Flow:**
-1. `hallVal > 512` (door open) or `micVal > 800` (sound)
-2. Transition to `S_ALARM` → buzzer ON + LED flash (100/500ms)
-3. Each new detection increments `alarmCount`
-4. 3 events within 12s (`T_TRIPLE`) → alarm timer reset
-5. Timer expires → transition to `S_INTRUSION_MONITOR` (2s)
-6. No new events → return to `S_IDLE`
+1. Door opens → reed switch triggers `attachInterrupt(INT2, doorISR, CHANGE)`
+2. `doorISR()` sets `doorChanged = true` (microsecond response, no polling)
+3. `updateState()` reads `doorChanged` → sets `hallDoorOpen = true` → `trig = TRIG_INTRUSION`
+4. Transition to `S_ALARM` → buzzer ON + LED flash (100/500ms)
+5. Subsequent door OPEN events (physical CHANGE) increment `alarmCount` (edge-triggered)
+6. Mic events (polled every 200ms) also increment `alarmCount` if `micVal > 800`
+7. 3 events within 12s (`T_TRIPLE`) → alarm timer reset
+8. Timer expires → transition to `S_INTRUSION_MONITOR` (2s)
+9. No new events → return to `S_IDLE`
 
 ---
 
@@ -160,26 +163,27 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 |---------|-------|---------|
 | Header | 1-24 | Comments, description, transition diagram |
 | Includes | 26-36 | Libraries: Arduino, StateMachineLib, AsyncTaskLib, Keypad, Servo, LiquidCrystal, RunningAverage, EEPROM |
-| Pin Defs | 38-60 | Pin assignments (D2-D12, D22-D27, A0-A3) |
-| Timings | 62-79 | Constants: T_UNLOCK, T_LOCKOUT, T_ENV_MONITOR, T_ALARM, etc. |
-| Thresholds | 81-89 | TEMP_LOW/HIGH, LIGHT_MIN, SOUND_HIGH, HALL_OPEN |
-| PIN/Pin History | 91-105 | Min/max digits, max uses, Steinhart-Hart, history length |
+| Pin Defs | 38-65 | Pin assignments (D2-D12, D21 reed switch, D22-D27, A0-A2) |
+| Timings | 67-79 | Constants: T_UNLOCK, T_LOCKOUT, T_ENV_MONITOR, T_ALARM, etc. |
+| Thresholds | 81-87 | TEMP_LOW/HIGH, LIGHT_MIN, SOUND_HIGH (HALL_OPEN removed) |
+| PIN/Pin History | 89-105 | Min/max digits, max uses, Steinhart-Hart, history length |
 | EEPROM Layout | 107-122 | Address map: magic, count, users (24 bytes each, 10 max) |
 | Enums | 124-145 | State (6), Trigger (4), Role (4) |
 | Time Windows | 147-165 | Hardcoded access schedules per role |
 | Global Objects | 167-195 | FSM, Keypad, Servo, LCD, RunningAverages, AsyncTask |
-| State Variables | 197-228 | pinBuf, failCount, alarmCount, blink state, menu state |
-| EEPROM Funcs | 232-285 | initEEPROM, loadUser, saveUser |
-| Access Validation | 287-355 | findUserByPin, pinIsUnique, rotatePin, validateAccess |
-| Actuator Helpers | 357-365 | setLED, setBuzzer, unlockDoor, lockDoor |
-| LCD Display | 367-419 | updateDisplay with per-state formatting |
-| FSM Handlers | 421-490 | onEnter/onLeave for each state |
-| Input Processing | 492-559 | handleMenuKey, handlePinEntry, processInput |
-| State Update | 561-619 | State timing, sensor monitoring, LED blink, LCD refresh |
-| FSM Setup | 621-670 | setupFSM with all transitions |
-| AsyncTask | 672-690 | Sensor averaging task (200ms) |
-| setup() | 692-717 | Initialization: pins, servo, LCD, EEPROM, tasks, FSM |
-| loop() | 719-728 | processInput → updateState → sensorTask.Update() → fsm.Update() |
+| State Variables | 197-230 | pinBuf, failCount, alarmCount, blink state, menu state, **doorChanged (volatile)** |
+| ISR | 232-240 | **doorISR()** — sets `doorChanged = true` |
+| EEPROM Funcs | 242-295 | initEEPROM, loadUser, saveUser |
+| Access Validation | 297-365 | findUserByPin, pinIsUnique, rotatePin, validateAccess |
+| Actuator Helpers | 367-375 | setLED, setBuzzer, unlockDoor, lockDoor |
+| LCD Display | 377-429 | per-state formatting |
+| FSM Handlers | 431-500 | onEnter/onLeave for each state |
+| Input Processing | 502-569 | handleMenuKey, handlePinEntry, processInput |
+| State Update | 571-710 | **Interrupt flag processing**, state timing, sensor monitoring, LED blink, LCD refresh |
+| FSM Setup | 712-760 | setupFSM with all transitions |
+| AsyncTask | 762-780 | Sensor averaging task (200ms) — **hall removed**, mic + NTC + LDR only |
+| setup() | 782-810 | Initialization: pins, servo, LCD, EEPROM, tasks, **attachInterrupt**, FSM |
+| loop() | 812-822 | processInput → updateState → sensorTask.Update() → fsm.Update() |
 
 ---
 
@@ -195,10 +199,10 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 | D22 | LCD_RS | OUTPUT | LCD register select |
 | D23 | LCD_EN | OUTPUT | LCD enable |
 | D24-D27 | LCD_D4-D7 | OUTPUT | LCD data lines (4-bit) |
+| D21 | DOOR_SENSOR | INPUT_PULLUP | Reed switch (INT2, interrupt) |
 | A0 | MICROPHONE | INPUT | KY-037 sound |
 | A1 | NTC_THERMISTOR | INPUT | KY-013 temp |
 | A2 | LDR | INPUT | KY-018 light |
-| A3 | HALL | INPUT | KY-035 door sensor |
 
 ### Keypad Map
 
@@ -269,10 +273,12 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 |--------|-----|-----------|--------|-------|
 | Temperature (NTC) | A1 | < 20°C / > 50°C | 20-50°C | Outside range |
 | Light (LDR) | A2 | < 100 ADC | ≥ 100 | < 100 |
-| Hall (door) | A3 | > 512 ADC | ≤ 512 | > 512 (open) |
+| Door | D21 (INT2) | — | — | Interrupt on CHANGE (reed switch) |
 | Microphone | A0 | > 800 ADC | ≤ 800 | > 800 (sound) |
 
-All analog sensors are read via `AsyncTaskLib` at 200ms intervals.
+Analog sensors (NTC, LDR) are read via `AsyncTaskLib` at 200ms intervals.
+Door sensor is **interrupt-driven** via `attachInterrupt(digitalPinToInterrupt(21), doorISR, CHANGE)` 
+for instant detection — no polling latency.
 Temperature and light use `RunningAverage` library (5 samples) for smoothing.
 
 ---
@@ -340,8 +346,8 @@ scripts/build.sh -v build    # Verbose
 
 **Memory usage (Arduino Mega):**
 ```
-RAM:    725 bytes (8.9%) of 8192
-Flash:  16494 bytes (6.5%) of 253952
+RAM:    741 bytes (9.0%) of 8192
+Flash:  17404 bytes (6.9%) of 253952
 ```
 
 ---

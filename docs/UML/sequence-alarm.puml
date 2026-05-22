@@ -1,15 +1,17 @@
 @startuml IntrusionAlarm
 ' ====================================================================
-' Sequence diagram - Intrusion and alarm
-' Hall sensor -> ALARM (2s, 100/500ms) -> MONITOR_INTRUSOS -> IDLE
+' Sequence diagram - Intrusion and alarm (interrupt-driven)
+' Reed switch on D21 -> ISR triggers -> ALARM (2s, 100/500ms)
+' -> INTRUSION_MONITOR -> IDLE
 ' ====================================================================
 
 skinparam backgroundColor white
 skinparam defaultFontName SansSerif
 skinparam sequenceMessageAlign center
 
-participant "Hall Sensor\nA3" as HALL #D5F5E3
+participant "Reed Switch\nD21 (INT2)" as REED #D5F5E3
 participant "Microphone\nA0" as MIC #D5F5E3
+participant "doorISR()" as ISR #D5F5E3
 participant "System\n(loop)" as SYS #FFCCCC
 participant "AsyncTask\nsensorTask" as ASYNC #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
@@ -17,15 +19,18 @@ participant "Red LED\nD10" as LED #FADBD8
 participant "Buzzer\nD11" as BUZ #FADBD8
 
 == INTRUSION MONITOR - waiting ==
-note right: State S_MONITOR_INTRUSOS\nLCD: "MONITOR SEC"
+note right: State S_INTRUSION_MONITOR\nLCD: "MONITOR SEC"
 
-loop each sensorTask tick (200ms)
-  ASYNC -> HALL: analogRead(PIN_HALL)
-  ASYNC -> MIC: analogRead(PIN_MIC)
-  HALL --> SYS: hallVal = 612
-  note right: Threshold > 512\nDoor opened!
-  SYS -> SYS: trig = TRIG_INTRUSION
-end
+REED -> ISR: **Door opens**\nPin goes HIGH (pullup)
+note right: attachInterrupt(CHANGE)\nImmediate — no polling!
+ISR -> ISR: doorChanged = true
+ISR -> REED: return
+
+SYS -> SYS: updateState()\ndoorChanged == true
+SYS -> SYS: hallDoorOpen = true
+SYS -> SYS: doorChanged = false
+note right #FFCCCC: Edge consumed here\nso ALARM won't\ndouble-count
+SYS -> SYS: trig = TRIG_INTRUSION
 
 FSM -> SYS: Update()
 FSM -> SYS: Transition to S_ALARM
@@ -40,11 +45,19 @@ loop until timer expires
   note right: Buzzer always ON\nduring ALARM
 end
 
-MIC -> SYS: micVal > 800 (sonic event)
+== Additional events during ALARM ==
+MIC -> ASYNC: sensorTask tick (200ms)
+ASYNC -> SYS: micVal > 800 (loud sound)
 SYS -> SYS: alarmCount = 1
-HALL -> SYS: hallVal > 512 (door open)
+
+REED -> ISR: **Door closes then opens again**\nCHANGE x2
+ISR -> ISR: doorChanged = true
+SYS -> SYS: updateState()\ndoorChanged == true\nhallDoorOpen = true
 SYS -> SYS: alarmCount = 2
-MIC -> SYS: micVal > 800
+note right: Edge-triggered: only\ncounts physical OPEN\nevents, not steady state
+
+MIC -> ASYNC: sensorTask tick
+ASYNC -> SYS: micVal > 800
 SYS -> SYS: alarmCount = 3
 note right: 3 events in <12s = TRIPLE!\nAlarm timer reset
 
@@ -55,10 +68,13 @@ SYS -> BUZ: LOW
 SYS -> LED: off
 
 == INTRUSION MONITOR - 2s watch ==
-HALL --> SYS: hallVal = 420 (door closed)
-MIC --> SYS: micVal = 350 (no sound)
-SYS -> SYS: No intrusion - timer expires
+MIC -> ASYNC: sensorTask ticks\nmicVal = 350 (quiet)
+REED -> ISR: **Door closes** (CHANGE)
+ISR -> ISR: doorChanged = true
+SYS -> SYS: hallDoorOpen = false
+note right: Door closed.\nNo trigger since\nhallDoorOpen is false
 
+SYS -> SYS: No intrusion - timer expires
 FSM -> SYS: trig = TRIG_AUTH_OK (2s)
 FSM -> SYS: Transition to S_IDLE
 SYS -> SYS: onEnterIdle()

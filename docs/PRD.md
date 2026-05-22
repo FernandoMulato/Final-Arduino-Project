@@ -34,7 +34,7 @@ The system is implemented on the **ATmega2560** microcontroller and organized as
 | Buzzer | Audible alarm for excessive attempts or intrusion |
 | LED | Visual status indicator (red flashing per mode) |
 | Sound Sensor KY-037 | Sound/intrusion detection via microphone |
-| Analog Hall Sensor KY-035 | Door status monitoring (open/closed) |
+| Magnetic Reed Switch (D21) | Door status monitoring via interrupt (D21, INT2) |
 | Analog Temperature Sensor KY-013 | Ambient temperature reading |
 | Photoresistor Module KY-018 | Ambient light level reading |
 | Potentiometer | LCD contrast adjustment |
@@ -136,7 +136,7 @@ The **MONITOR AMBIENTAL** state uses the **RunningAverage Library** to average s
 | Temperature | KY-013 | < 20°C → activate heating/ventilation |
 | Light | KY-018 | < 100 (ADC units) → activate lighting |
 | Sound | KY-037 | Configurable threshold → intrusion detection |
-| Magnetic field (door) | KY-035 | State change → door opened without authorization |
+| Magnetic field (door) | Reed switch D21 (INT2) | Interrupt (CHANGE) → immediate door open detection |
 
 > The number of people present may influence thermal comfort thresholds (to be defined during implementation).
 
@@ -173,7 +173,7 @@ LCD contrast is adjusted via the **potentiometer**.
 | RF-05 | The servo motor unlocks the lock for a programmed time (2 s) and returns to INICIO state. |
 | RF-06 | The system automatically returns to INICIO state after any completed action. |
 | RF-07 | Access time windows are defined per role in code. |
-| RF-08 | The Hall sensor (KY-035) monitors the physical door status. |
+| RF-08 | The reed switch on D21 (INT2) monitors door status via hardware interrupt (attachInterrupt). |
 | RF-09 | The system manages user registration and role assignment stored in EEPROM. |
 | RF-10 | Keys are forcibly renewed every 4 uses; no reuse allowed. |
 | RF-11 | The sound sensor (KY-037) detects intrusion events via noise. |

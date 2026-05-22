@@ -139,11 +139,15 @@ package "Sensors" as sensPkg #F0F0F0 {
   end note
 
   class SensorHall #D5F5E3;line:Black {
-    {method} +read(): int
+    {field} doorChanged: volatile bool
+    {method} +{static} doorISR(): void
   }
   note right of SensorHall
-    Pin A3 - door magnetic sensor
-    Threshold: ADC > 512
+    Pin D21 (INT2) - reed switch
+    attachInterrupt(CHANGE)
+    ISR sets doorChanged flag
+    Loop reads pin on flag
+    Instant door open detection
   end note
 
   class Microphone #D5F5E3;line:Black {
