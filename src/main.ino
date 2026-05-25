@@ -17,11 +17,13 @@
  *
  * @par Hardware
  * Board: Arduino Mega (ATmega2560)
- * - Lock: Servo motor (D12, PWM)
- * - Display: LCD 16x2 parallel (D22-D27)
+ * - Lock: Servo motor (D10, PWM)
+ * - Display: LCD 16x2 parallel (D12, D11, D5-D2)
+ * - RGB LED: R=D22, G=D24, B=D26
+ * - Buzzer: D9 (tone())
  * - Door sensor: Reed switch on D21 (INT2, interrupt-driven)
  * - Mic: KY-037 on A0, NTC: KY-013 on A1, LDR: KY-018 on A2
- * - Keypad: 4x4 matrix (D2-D9)
+ * - Keypad: 4x4 matrix (D29,D31,D33,D35 / D37,D39,D41,D43)
  *
  * @par Memory
  * SRAM: 741B (9.0%), Flash: 17.4KB (6.9%), EEPROM: 4KB
@@ -45,7 +47,9 @@
 // ============================================================================
 
 #include <Arduino.h>
+#ifndef SIMULATOR_BUILD
 #include <StateMachineLib.h>
+#endif
 #include <EEPROM.h>
 #include <Keypad.h>
 #include <Servo.h>
@@ -56,35 +60,55 @@
 /** @} */
 
 // ============================================================================
+// @name Build Configuration
+// @brief Select between real hardware and simulator builds
+// ============================================================================
+
+/**
+ * @brief Build toggle for simulator environments.
+ * @details Simulators (Wokwi, Tinkercad, etc.) may not support
+ * StateMachineLib. Uncomment to replace the library-based FSM with
+ * a manual switch/case implementation. All other functionality,
+ * pins, sensors, EEPROM, LCD, and timing remain identical.
+ */
+// #define SIMULATOR_BUILD
+
+/** @} */
+
+// ============================================================================
 // @name Pin Definitions
 // @brief Hardware pin assignments for the ATmega2560
 // @{
 // ============================================================================
 
 /** @brief Keypad row pins (4x4 matrix). */
-constexpr uint8_t ROW_PINS[4] = {2, 3, 4, 5};
+constexpr uint8_t ROW_PINS[4] = {29, 31, 33, 35};
 /** @brief Keypad column pins. */
-constexpr uint8_t COL_PINS[4] = {6, 7, 8, 9};
+constexpr uint8_t COL_PINS[4] = {37, 39, 41, 43};
 
-/** @brief Red LED indicator (alarm/block patterns). */
-constexpr uint8_t PIN_LED    = 10;
-/** @brief Piezo buzzer (alarm). */
-constexpr uint8_t PIN_BUZZER = 11;
+/** @brief RGB LED red channel (alarm/block patterns). */
+constexpr uint8_t PIN_LED_R = 22;
+/** @brief RGB LED green channel (access granted). */
+constexpr uint8_t PIN_LED_G = 24;
+/** @brief RGB LED blue channel (monitoring). */
+constexpr uint8_t PIN_LED_B = 26;
+/** @brief Piezo buzzer (alarm, via tone()). */
+constexpr uint8_t PIN_BUZZER = 9;
 /** @brief Servo motor (door lock, PWM). */
-constexpr uint8_t PIN_SERVO  = 12;
+constexpr uint8_t PIN_SERVO  = 10;
 
 /** @brief LCD RS pin. */
-constexpr uint8_t LCD_RS = 22;
+constexpr uint8_t LCD_RS = 12;
 /** @brief LCD Enable pin. */
-constexpr uint8_t LCD_EN = 23;
+constexpr uint8_t LCD_EN = 11;
 /** @brief LCD data pin D4 (4-bit mode). */
-constexpr uint8_t LCD_D4 = 24;
+constexpr uint8_t LCD_D4 = 5;
 /** @brief LCD data pin D5. */
-constexpr uint8_t LCD_D5 = 25;
+constexpr uint8_t LCD_D5 = 4;
 /** @brief LCD data pin D6. */
-constexpr uint8_t LCD_D6 = 26;
+constexpr uint8_t LCD_D6 = 3;
 /** @brief LCD data pin D7. */
-constexpr uint8_t LCD_D7 = 27;
+constexpr uint8_t LCD_D7 = 2;
 
 /**
  * @brief Sound sensor analog input.
@@ -314,7 +338,9 @@ constexpr const char* ROLE_NAMES[5] = {
  * @brief Finite State Machine instance.
  * @details 6 states, 10 transitions using StateMachineLib.
  */
+#ifndef SIMULATOR_BUILD
 StateMachine fsm(6, 10);
+#endif
 
 /** @brief Current FSM state, cached for display and logic. */
 State currentState = S_IDLE;
@@ -377,6 +403,12 @@ unsigned long pinStartTime = 0;
 
 /** @brief Consecutive failed auth attempts. */
 uint8_t failCount = 0;
+
+/** @brief Role of the last authenticated user (0 = none). */
+uint8_t lastAuthRole = 0;
+/** @brief Index of the last authenticated user (0xFF = none). */
+uint8_t lastAuthUserIdx = 0xFF;
+
 /**
  * @brief Alarm event counter for triple detection.
  * @details Incremented on door OPEN events (interrupt) and loud sound (polled).
@@ -534,6 +566,11 @@ void onEnterAlarm();
 /** @brief S_ALARM state exit handler (deactivates buzzer + LED). */
 void onLeaveAlarm();
 
+#ifdef SIMULATOR_BUILD
+/** @brief Manual FSM transition executor for simulator builds. */
+void updateFSM();
+#endif
+
 /** @} */
 
 // ============================================================================
@@ -552,7 +589,38 @@ void initEEPROM() {
   if (EEPROM.read(EEP_MAGIC) != EEP_MAGIC_VAL) {
     EEPROM.write(EEP_MAGIC, EEP_MAGIC_VAL);
     EEPROM.write(EEP_USER_COUNT, 0);
+    // Seed default test users
+    addUser("1234", ROLE_MANAGER);
+    addUser("5678", ROLE_OPERATOR);
+    addUser("9999", ROLE_SECURITY);
+    Serial.println(F("[EEPROM] Test users loaded: 1234=Mgr, 5678=Op, 9999=Sec"));
+  } else {
+    Serial.println(F("[EEPROM] Existing users preserved"));
   }
+}
+
+/**
+ * @brief Add a new user to EEPROM.
+ * @param [in] pin  4-digit PIN string.
+ * @param [in] role User role (1-4).
+ */
+void addUser(const char* pin, uint8_t role) {
+  uint8_t n = userCount();
+  if (n >= MAX_USERS) {
+    Serial.println(F("[EEPROM] Max users reached"));
+    return;
+  }
+  char hist[4][4];
+  memset(hist, 0, sizeof(hist));
+  char p[5];
+  for (uint8_t i = 0; i < 4; i++) p[i] = pin[i];
+  p[4] = '\0';
+  saveUser(n, p, role, 0, true, 0, (const char(*)[4])hist);
+  EEPROM.update(EEP_USER_COUNT, n + 1);
+  Serial.print(F("[EEPROM] Added user "));
+  Serial.print(n);
+  Serial.print(F(" role "));
+  Serial.println(ROLE_NAMES[role]);
 }
 
 /**
@@ -744,7 +812,9 @@ bool validateAccess(const char* pin) {
     return false;
   }
 
-  // Grant access, increment uses
+  // Grant access, track authenticated user
+  lastAuthRole = role;
+  lastAuthUserIdx = idx;
   uses++;
   if (uses >= PIN_MAX_USES) {
     // Force PIN change on next attempt
@@ -771,14 +841,47 @@ bool validateAccess(const char* pin) {
 // @{
 // ============================================================================
 
-/** @brief Set red LED state. @param [in] on  `true` = ON, `false` = OFF. */
-void setLED(bool on)     { digitalWrite(PIN_LED, on ? HIGH : LOW); }
-/** @brief Set buzzer state. @param [in] on  `true` = ON, `false` = OFF. */
-void setBuzzer(bool on)  { digitalWrite(PIN_BUZZER, on ? HIGH : LOW); }
+/** @brief Set RGB LED color. @param r Red, @param g Green, @param b Blue. */
+void setRGB(bool r, bool g, bool b) {
+  digitalWrite(PIN_LED_R, r ? HIGH : LOW);
+  digitalWrite(PIN_LED_G, g ? HIGH : LOW);
+  digitalWrite(PIN_LED_B, b ? HIGH : LOW);
+}
+/** @brief Turn off RGB LED and stop blink. */
+void ledOff()            { setRGB(false, false, false); blinkActive = false; }
+/** @brief Solid red (alarm/block). */
+void ledRed()            { setRGB(true, false, false); blinkActive = false; }
+/** @brief Solid green (access granted). */
+void ledGreen()          { setRGB(false, true, false); blinkActive = false; }
+/** @brief Solid blue (monitoring). */
+void ledBlue()           { setRGB(false, false, true); blinkActive = false; }
+/**
+ * @brief Set buzzer state using tone().
+ * @details tone() generates a square wave on the pin without blocking.
+ * The pin does not need pinMode() — tone() overrides it automatically.
+ * @param on `true` = 1kHz tone, `false` = off.
+ */
+void setBuzzer(bool on)  { if (on) tone(PIN_BUZZER, 1000); else noTone(PIN_BUZZER); }
 /** @brief Unlock the door (servo to 90°). */
 void unlockDoor()        { doorServo.write(SRV_UNLOCKED); }
 /** @brief Lock the door (servo to 0°). */
 void lockDoor()          { doorServo.write(SRV_LOCKED); }
+
+/**
+ * @brief Update RGB LED blink pattern.
+ * @details Called from updateState(). Blinks the red channel only,
+ * leaving green and blue unchanged (they should be off during blink).
+ */
+void updateBlinkPattern() {
+  if (!blinkActive) return;
+  unsigned long now = millis();
+  unsigned long interval = ledOn ? blinkOffMs : blinkOnMs;
+  if (now - lastBlink >= interval) {
+    lastBlink = now;
+    ledOn = !ledOn;
+    digitalWrite(PIN_LED_R, ledOn ? HIGH : LOW);
+  }
+}
 
 /** @} */
 
@@ -835,7 +938,10 @@ void updateDisplay() {
       unsigned long elapsed = millis() - stateEntryTime;
       unsigned long rem = (elapsed < T_UNLOCK) ? (T_UNLOCK - elapsed) / 1000 : 0;
       lcd.setCursor(0, 1);
-      lcd.print(F("OPEN "));
+      if (lastAuthRole > 0 && lastAuthRole < 5) {
+        lcd.print(ROLE_NAMES[lastAuthRole]);
+        lcd.print(' ');
+      }
       lcd.print(rem);
       lcd.print('s');
       break;
@@ -850,17 +956,26 @@ void updateDisplay() {
       lcd.setCursor(0, 1);
       lcd.print(F("T:"));
       lcd.print((int)temperature);
-      lcd.print(F("C L:"));
+      lcd.print('C');
+      lcd.print(' ');
+      lcd.print(F("L:"));
       lcd.print(lightLevel);
       break;
     }
     case S_INTRUSION_MONITOR:
       lcd.print(F("MONITOR SEC"));
+      lcd.setCursor(0, 1);
+      if (hallDoorOpen) {
+        lcd.print(F("Door: OPEN"));
+      } else {
+        lcd.print(F("Door: CLOSED"));
+      }
       break;
     case S_ALARM:
       lcd.print(F("!!! ALARM !!!"));
       lcd.setCursor(0, 1);
-      lcd.print(F("Intrusion!"));
+      lcd.print(F("Event #"));
+      lcd.print(alarmCount);
       break;
   }
 }
@@ -885,7 +1000,7 @@ void onEnterIdle() {
   pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
   trig = TRIG_NONE;
   menuActive = false; menuStep = 0; menuBufLen = 0; menuUserIdx = 0xFF;
-  blinkActive = false; setLED(LOW); setBuzzer(false);
+  ledOff(); setBuzzer(false);
   lockDoor();
   lastLcdUpdate = 0;  // Force LCD update
   Serial.println(F("[STATE] IDLE — System ready"));
@@ -908,6 +1023,7 @@ void onEnterOpen() {
   currentState = S_OPEN;
   trig = TRIG_NONE;
   stateEntryTime = millis();
+  ledGreen(); setBuzzer(false);
   unlockDoor();
   Serial.println(F("[STATE] OPEN — Door unlocked (2s)"));
 }
@@ -931,6 +1047,9 @@ void onEnterBlocked() {
   currentState = S_BLOCKED;
   trig = TRIG_NONE;
   stateEntryTime = millis();
+  setBuzzer(false);
+  // Turn off green/blue, red will blink
+  digitalWrite(PIN_LED_G, LOW); digitalWrite(PIN_LED_B, LOW);
   blinkActive = true; blinkOnMs = BLK_ON; blinkOffMs = BLK_OFF;
   lastBlink = millis(); ledOn = false;
   Serial.println(F("[STATE] BLOCKED — 3 failed attempts, 5s block"));
@@ -941,7 +1060,7 @@ void onEnterBlocked() {
  * @details Stops the LED blink pattern and turns the LED off.
  */
 void onLeaveBlocked() {
-  blinkActive = false; setLED(LOW);
+  ledOff();
 }
 
 /**
@@ -952,6 +1071,9 @@ void onEnterIntrusionMonitor() {
   currentState = S_INTRUSION_MONITOR;
   trig = TRIG_NONE;
   stateEntryTime = millis();
+  ledBlue(); setBuzzer(false);
+  alarmCount = 0;
+  hallDoorOpen = false; doorChanged = false;
   Serial.println(F("[STATE] INTRUSION_MONITOR — Watching..."));
 }
 
@@ -966,6 +1088,8 @@ void onEnterEnvMonitor() {
   currentState = S_ENV_MONITOR;
   trig = TRIG_NONE;
   stateEntryTime = millis();
+  ledBlue(); setBuzzer(false);
+  alarmCount = 0;
   Serial.println(F("[STATE] ENV_MONITOR — Temp + light"));
 }
 
@@ -983,9 +1107,14 @@ void onEnterAlarm() {
   trig = TRIG_NONE;
   stateEntryTime = millis();
   setBuzzer(true);
+  // Turn off green/blue, red will blink fast
+  digitalWrite(PIN_LED_G, LOW); digitalWrite(PIN_LED_B, LOW);
   blinkActive = true; blinkOnMs = ALM_ON; blinkOffMs = ALM_OFF;
   lastBlink = millis(); ledOn = false;
-  Serial.println(F("[STATE] ALARM — Intrusion!"));
+  alarmCount++;
+  if (alarmCount == 1) firstAlarmTime = millis();
+  Serial.print(F("[STATE] ALARM — Event #"));
+  Serial.println(alarmCount);
 }
 
 /**
@@ -994,7 +1123,7 @@ void onEnterAlarm() {
  */
 void onLeaveAlarm() {
   setBuzzer(false);
-  blinkActive = false; setLED(LOW);
+  ledOff();
 }
 
 /** @} */
@@ -1004,6 +1133,13 @@ void onLeaveAlarm() {
 // @brief PIN entry and menu navigation handlers
 // @{
 // ============================================================================
+
+/** @brief Close the PIN change menu and reset state. */
+void closeMenu() {
+  menuActive = false; menuStep = 0; menuBufLen = 0;
+  menuUserIdx = 0xFF; memset(menuBuf, 0, sizeof(menuBuf));
+  pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+}
 
 /**
  * @brief Handle keypad input during PIN change menu.
@@ -1018,9 +1154,7 @@ void onLeaveAlarm() {
  */
 void handleMenuKey(char key) {
   if (key == '*') {
-    // Cancel menu
-    menuActive = false; menuStep = 0; menuBufLen = 0; menuUserIdx = 0xFF;
-    pinLen = 0; memset(pinBuf, 0, sizeof(pinBuf));
+    closeMenu();
     Serial.println(F("[MENU] Cancelled"));
     return;
   }
@@ -1059,10 +1193,15 @@ void handleMenuKey(char key) {
       }
       // Save new PIN
       rotatePin(menuUserIdx, menuBuf);
-      pinChangeRequired = false;
-      pinChangeUserIdx = 0xFF;
+      if (pinChangeRequired && pinChangeUserIdx == menuUserIdx) {
+        pinChangeRequired = false; pinChangeUserIdx = 0xFF;
+      }
       Serial.println(F("[MENU] PIN changed successfully!"));
-      menuActive = false; menuStep = 0; menuBufLen = 0;
+      lcd.clear();
+      lcd.setCursor(0, 0); lcd.print(F("PIN changed!"));
+      lcd.setCursor(0, 1); lcd.print(F("OK"));
+      delay(1500);
+      closeMenu();
     }
     return;
   }
@@ -1143,6 +1282,19 @@ void processInput() {
 
   if (currentState == S_IDLE) {
     if (key != NO_KEY) {
+#ifdef SIMULATOR_BUILD
+      // Test keys for simulator — skip FSM and jump directly
+      if (!menuActive) {
+        if (key == 'A') {
+          Serial.println(F("[TEST] ENV_MONITOR"));
+          onLeaveIdle(); onEnterEnvMonitor(); return;
+        }
+        if (key == 'B') {
+          Serial.println(F("[TEST] INTRUSION_MONITOR"));
+          onLeaveIdle(); onEnterIntrusionMonitor(); return;
+        }
+      }
+#endif
       if (menuActive) {
         handleMenuKey(key);
       } else {
@@ -1211,8 +1363,8 @@ void updateState() {
   }
 
   // --- State timing (millis-based) ---
+  unsigned long elapsed = now - stateEntryTime;
   if (trig == TRIG_NONE) {
-    unsigned long elapsed = now - stateEntryTime;
     switch (currentState) {
       case S_OPEN:
         if (elapsed >= T_UNLOCK) trig = TRIG_AUTH_OK;  // reuse to exit
@@ -1272,46 +1424,22 @@ void updateState() {
       break;
 
     case S_ALARM:
-      // Triple alarm detection within T_TRIPLE window
-      // doorChanged is edge-triggered (ISR fires on CHANGE), so only
-      // counts DOOR events when the door physically changes state
-      if (doorChanged) {
-        doorChanged = false;
-        hallDoorOpen = digitalRead(PIN_HALL_DOOR) == HIGH;
-        if (hallDoorOpen) {
-          alarmCount++;
-          if (alarmCount == 1) firstAlarmTime = now;
-          Serial.print(F("[ALARM] Door event #"));
-          Serial.println(alarmCount);
-        }
-      }
-      // Mic is polled (level-based)
-      if (micVal > SOUND_HIGH) {
-        alarmCount++;
-        if (alarmCount == 1) firstAlarmTime = now;
-        Serial.print(F("[ALARM] Sound event #"));
-        Serial.println(alarmCount);
-      }
+      // Triple alarm: 3 alarm entries within T_TRIPLE → extend duration
+      // alarmCount increments in onEnterAlarm() each transition
       if (alarmCount >= 3 && (now - firstAlarmTime) < T_TRIPLE) {
-        Serial.println(F("[ALARM] Triple event!"));
-        // Reset the alarm timer for extended block
-        stateEntryTime = now;
+        Serial.println(F("[ALARM] Triple event! Extended alarm"));
         alarmCount = 0;
+        stateEntryTime = now;  // Reset timer = stay in alarm longer
+      } else if (elapsed >= T_ALARM) {
+        trig = TRIG_AUTH_OK;
       }
       break;
 
     default: break;
   }
 
-  // --- LED blink pattern ---
-  if (blinkActive) {
-    unsigned long interval = ledOn ? blinkOffMs : blinkOnMs;
-    if (now - lastBlink >= interval) {
-      lastBlink = now;
-      ledOn = !ledOn;
-      setLED(ledOn);
-    }
-  }
+  // --- LED blink pattern (RGB red channel) ---
+  updateBlinkPattern();
 
   // --- LCD refresh (AsyncTaskLib driven in loop) ---
   if (now - lastLcdUpdate >= LCD_INTERVAL) {
@@ -1321,6 +1449,95 @@ void updateState() {
 }
 
 /** @} */
+
+#ifdef SIMULATOR_BUILD
+
+// ============================================================================
+// @name Simulator FSM
+// @brief Manual FSM for simulator builds (no StateMachineLib)
+// @{
+// ============================================================================
+
+/**
+ * @brief Manual FSM state transition executor.
+ * @details Replaces StateMachineLib::Update() for simulator builds.
+ * Evaluates the same 10 transitions as setupFSM() using a simple
+ * switch/case pattern. Calls the same onEnter/onLeave handlers.
+ *
+ * Transition table (identical to real hardware):
+ * @code{.txt}
+ * S_IDLE --[TRIG_AUTH_OK]--> S_OPEN
+ * S_IDLE --[TRIG_LOCKOUT]--> S_BLOCKED
+ * S_OPEN --[timer]--> S_IDLE
+ * S_BLOCKED --[timer]--> S_IDLE
+ * S_ENV_MONITOR --[TRIG_ENV_ALARM]--> S_ALARM
+ * S_ENV_MONITOR --[timer]--> S_IDLE
+ * S_INTRUSION_MONITOR --[TRIG_INTRUSION]--> S_ALARM
+ * S_INTRUSION_MONITOR --[timer]--> S_IDLE
+ * S_ALARM --[timer]--> S_INTRUSION_MONITOR
+ * @endcode
+ */
+void updateFSM() {
+  State nextState = currentState;
+
+  // --- Evaluate transitions based on current state and pending trigger ---
+  switch (currentState) {
+    case S_IDLE:
+      if (trig == TRIG_AUTH_OK)        nextState = S_OPEN;
+      else if (trig == TRIG_LOCKOUT)   nextState = S_BLOCKED;
+      break;
+
+    case S_OPEN:
+      if (trig == TRIG_AUTH_OK)        nextState = S_IDLE;
+      break;
+
+    case S_BLOCKED:
+      if (trig == TRIG_AUTH_OK)        nextState = S_IDLE;
+      break;
+
+    case S_ENV_MONITOR:
+      if (trig == TRIG_ENV_ALARM)      nextState = S_ALARM;
+      else if (trig == TRIG_AUTH_OK)   nextState = S_IDLE;
+      break;
+
+    case S_INTRUSION_MONITOR:
+      if (trig == TRIG_INTRUSION)      nextState = S_ALARM;
+      else if (trig == TRIG_AUTH_OK)   nextState = S_IDLE;
+      break;
+
+    case S_ALARM:
+      if (trig == TRIG_AUTH_OK)        nextState = S_INTRUSION_MONITOR;
+      break;
+  }
+
+  // --- Execute transition if state changed ---
+  if (nextState != currentState) {
+    // Call onLeave for current state
+    switch (currentState) {
+      case S_IDLE:               onLeaveIdle(); break;
+      case S_OPEN:               onLeaveOpen(); break;
+      case S_BLOCKED:            onLeaveBlocked(); break;
+      case S_ENV_MONITOR:        onLeaveEnvMonitor(); break;
+      case S_INTRUSION_MONITOR:  onLeaveIntrusionMonitor(); break;
+      case S_ALARM:              onLeaveAlarm(); break;
+      default: break;
+    }
+    // Call onEnter for new state (handlers set currentState + trig = TRIG_NONE)
+    switch (nextState) {
+      case S_IDLE:               onEnterIdle(); break;
+      case S_OPEN:               onEnterOpen(); break;
+      case S_BLOCKED:            onEnterBlocked(); break;
+      case S_ENV_MONITOR:        onEnterEnvMonitor(); break;
+      case S_INTRUSION_MONITOR:  onEnterIntrusionMonitor(); break;
+      case S_ALARM:              onEnterAlarm(); break;
+      default: break;
+    }
+  }
+}
+
+/** @} */
+
+#endif // SIMULATOR_BUILD
 
 // ============================================================================
 // @name FSM Configuration
@@ -1354,6 +1571,7 @@ void updateState() {
  *
  * @see Trigger
  */
+#ifndef SIMULATOR_BUILD
 void setupFSM() {
   // State entry handlers
   fsm.SetOnEntering(S_IDLE, onEnterIdle);
@@ -1392,6 +1610,8 @@ void setupFSM() {
   // Alarm -> intrusion monitoring when timer expires
   fsm.AddTransition(S_ALARM, S_INTRUSION_MONITOR, timedDone);
 }
+
+#endif // !SIMULATOR_BUILD
 
 /** @} */
 
@@ -1463,9 +1683,10 @@ void setup() {
   Serial.begin(9600);
   randomSeed(analogRead(PIN_MIC));
 
-  // Pin modes
-  pinMode(PIN_LED, OUTPUT); digitalWrite(PIN_LED, LOW);
-  pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
+  // Pin modes — RGB LED
+  pinMode(PIN_LED_R, OUTPUT); pinMode(PIN_LED_G, OUTPUT); pinMode(PIN_LED_B, OUTPUT);
+  ledOff();
+  // Buzzer: tone() handles pin mode automatically, no pinMode needed
 
   // Door interrupt: reed switch on D21 (INT2), INPUT_PULLUP
   // Normally closed with magnet (door shut) = LOW
@@ -1490,8 +1711,13 @@ void setup() {
   sensorTask.Start();
 
   // FSM
+#ifndef SIMULATOR_BUILD
   setupFSM();
   fsm.SetState(S_IDLE, false, true);
+#else
+  currentState = S_IDLE;
+  onEnterIdle();
+#endif
 
   Serial.println(F("=== ACCESS CONTROL & SECURITY ==="));
   Serial.println(F("Keys: [0-9]=digit [#]=ok [*]=cancel"));
@@ -1534,7 +1760,11 @@ void loop() {
   sensorTask.Update();
 
   // Update FSM (state transition checks)
+#ifndef SIMULATOR_BUILD
   fsm.Update();
+#else
+  updateFSM();
+#endif
 }
 
 /** @} */

@@ -3,6 +3,7 @@
 ' Class diagram - Access Control and Security System
 ' Arquitectura Computacional - Arduino Mega (ATmega2560)
 ' 6-state FSM with AsyncTaskLib, Servo, LiquidCrystal, RunningAverage
+' Build toggle: SIMULATOR_BUILD replaces StateMachineLib with manual FSM
 ' ====================================================================
 
 skinparam classAttributeIconSize 0
@@ -55,6 +56,8 @@ package "State Machine" as fsmPkg #F0F0F0 {
   note right of StateMachine
     StateMachineLib v1.0.0
     6 states, 10 transitions
+    Replaced by manual FSM
+    when SIMULATOR_BUILD=1
   end note
 }
 
@@ -65,7 +68,8 @@ package "Peripherals" as perifPkg #F0F0F0 {
   }
   note right of Keypad
     Keypad 3.1.1 library
-    4x4 matrix on D2-D9
+    4x4 matrix on D29,D31,D33,D35
+    / D37,D39,D41,D43
     Map: 1-3A, 4-6B, 7-9C, *0#D
   end note
 
@@ -82,6 +86,8 @@ package "Peripherals" as perifPkg #F0F0F0 {
     2+: Users (10 x 24 bytes)
     Each user: PIN[4]+role+uses
     +active+histIdx+history[16]
+    Seed users: 1234(Mgr), 5678(Op),
+    9999(Sec) — on first boot
   end note
 
   class LiquidCrystal #D4E6F1;line:Black {
@@ -91,26 +97,25 @@ package "Peripherals" as perifPkg #F0F0F0 {
     {method} +clear(): void
   }
   note right of LiquidCrystal
-    LCD Keypad Shield (16x2)
+    LCD 16x2
     Parallel 4-bit mode
-    RS=D22, EN=D23, D4-D7=D24-D27
+    RS=12, EN=11, D4=5, D5=4
+    D6=3, D7=2
     Status codes: IDLE, OPEN
-    ERR, ALR, BLK
+    BLOCKED, ALARM, MONITOR
   end note
 
   class AsyncTask #D4E6F1;line:Black {
     {field} Interval: unsigned long
     {field} AutoReset: bool
-    {field} OnFinish: callback
     {method} +Start(): void
     {method} +Stop(): void
-    {method} +Reset(): void
     {method} +Update(): bool
   }
   note right of AsyncTask
     AsyncTaskLib 1.0.0
     Sensor averaging: 200ms
-    Periodic sensor reads
+    Read NTC + LDR + mic
     Non-blocking timing
   end note
 }
@@ -118,32 +123,30 @@ package "Peripherals" as perifPkg #F0F0F0 {
 ' === SENSORS ===
 package "Sensors" as sensPkg #F0F0F0 {
   class SensorNTC #D5F5E3;line:Black {
-    {field} runningAvg: RunningAverage
     {method} +read(): float
   }
   note right of SensorNTC
-    Pin A1
+    Pin A1 — KY-013
     Steinhart-Hart equation
-    Averaged via RunningAverage
+    Averaged via RunningAverage (5)
     Threshold: <20 C or >50 C
   end note
 
   class SensorLDR #D5F5E3;line:Black {
-    {field} runningAvg: RunningAverage
     {method} +read(): int
   }
   note right of SensorLDR
-    Pin A2
-    Averaged via RunningAverage
+    Pin A2 — KY-018
+    Averaged via RunningAverage (5)
     Threshold: ADC < 100
   end note
 
   class SensorHall #D5F5E3;line:Black {
     {field} doorChanged: volatile bool
-    {method} +{static} doorISR(): void
+    {method} +doorISR(): void
   }
   note right of SensorHall
-    Pin D21 (INT2) - reed switch
+    Pin D21 (INT2) — reed switch
     attachInterrupt(CHANGE)
     ISR sets doorChanged flag
     Loop reads pin on flag
@@ -154,8 +157,19 @@ package "Sensors" as sensPkg #F0F0F0 {
     {method} +read(): int
   }
   note right of Microphone
-    Pin A0 - KY-037
+    Pin A0 — KY-037
     Threshold: ADC > 800
+  end note
+
+  class RunningAverage #D5F5E3;line:Black {
+    {method} +add(value): void
+    {method} +getAverage(): float
+    {method} +getCount(): uint8_t
+  }
+  note right of RunningAverage
+    RunningAverage 0.4.9
+    5-sample sliding window
+    Used by NTC + LDR
   end note
 }
 
@@ -166,27 +180,37 @@ package "Actuators" as actPkg #F0F0F0 {
     {method} +write(angle): void
   }
   note right of Servo
-    Pin D12 (PWM)
+    Pin D10 (PWM)
     Locked: 0 degrees
     Unlocked: 90 degrees
     Duration: 2s (T_UNLOCK)
   end note
 
-  class RedLED #FADBD8;line:Black {
-    {method} +on(): void
-    {method} +off(): void
+  class RGB_LED #FADBD8;line:Black {
+    {method} +setRGB(r, g, b): void
+    {method} +ledOff(): void
+    {method} +ledRed(): void
+    {method} +ledGreen(): void
+    {method} +ledBlue(): void
+    {method} +updateBlinkPattern(): void
   }
-  note right of RedLED
-    Pin D10
-    BLOCK: 300/700ms
-    ALARM: 100/500ms
+  note right of RGB_LED
+    R=22, G=24, B=26
+    GREEN on ACCESS GRANTED
+    BLUE on MONITOR modes
+    RED blink on BLOCKED (300/700ms)
+    RED fast blink on ALARM (100/500ms)
   end note
 
   class Buzzer #FADBD8;line:Black {
     {method} +on(): void
     {method} +off(): void
   }
-  note right of Buzzer: Pin D11 - Piezo, ON in ALARM
+  note right of Buzzer
+    Pin D9 — Piezo
+    tone() — non-blocking square wave
+    ON during ALARM state only
+  end note
 }
 
 ' === CONTROLLER ===
@@ -199,29 +223,39 @@ package "Controller" as sysPkg #F0F0F0 {
     {field} temperature: float
     {field} lightLevel: int
     {field} alarmCount: uint8_t
+    {field} lastAuthRole: uint8_t
+    {field} lastAuthUserIdx: uint8_t
+    {field} pinChangeRequired: bool
+    {field} pinChangeUserIdx: uint8_t
     ..
     {method} +setupFSM(): void
+    {method} +updateFSM(): void [SIMULATOR_BUILD]
     {method} +processInput(): void
     {method} +updateState(): void
     {method} +updateDisplay(): void
     {method} +validateAccess(pin): bool
     {method} +findUserByPin(pin): uint8_t
     {method} +rotatePin(idx, newPin): void
+    {method} +addUser(pin, role): void
     {method} +initEEPROM(): void
+    {method} +closeMenu(): void
   }
   note bottom of System
     Single-file: src/main.ino
-    ~560 lines, 0 external modules
-    F() macro for PROGMEM
+    ~1770 lines, 0 external modules
+    F() macro for PROGMEM strings
     AsyncTaskLib for sensor timing
     millis() for state timing + blink
+    tone() for buzzer (non-blocking)
+    SIMULATOR_BUILD: manual FSM,
+    test keys A/B, no StateMachineLib
   end note
 }
 
 ' === RELATIONSHIPS ===
 System --> State : "uses"
 System --> Trigger : "fires"
-System --> StateMachine : "controls"
+System --> StateMachine : "controls (real)"
 System --> Keypad : "reads keys"
 System --> EEPROM : "persists data"
 System --> LiquidCrystal : "displays status"
@@ -230,11 +264,11 @@ System --> SensorNTC : "reads temp"
 System --> SensorLDR : "reads light"
 System --> SensorHall : "reads door"
 System --> Microphone : "reads sound"
+System --> RunningAverage : "smooths NTC+LDR"
 System --> Servo : "actuates lock"
-System --> RedLED : "alarm signal"
+System --> RGB_LED : "status indicator"
 System --> Buzzer : "sound alarm"
 System --> User : "manages"
-System --> RunningAverage : "smooths sensors"
 
 SensorNTC --> RunningAverage : "uses"
 SensorLDR --> RunningAverage : "uses"

@@ -20,12 +20,13 @@ conditions (temperature, light) with sensor averaging.
 |-----------|-------|
 | Microcontroller | ATmega2560 (Arduino Mega) |
 | Frequency | 16 MHz |
-| SRAM | 8 KB (741 B used — 9.0%) |
-| Flash | 248 KB (17.4 KB used — 7.0%) |
+| SRAM | 8 KB (790 B used — 9.6%) |
+| Flash | 248 KB (19.4 KB used — 7.6%) |
 | EEPROM | 4 KB |
 | Language | C++ (Arduino framework) |
 | Libraries | StateMachineLib, AsyncTaskLib, Keypad 3.1.1, Servo, LiquidCrystal, RunningAverage |
-| Files | 1 (`src/main.ino`, ~585 lines) |
+| Files | 1 (`src/main.ino`, ~1770 lines) |
+| Build toggle | `SIMULATOR_BUILD` (manual FSM for simulators) |
 
 ---
 
@@ -66,7 +67,7 @@ The FSM is the architectural core. It implements **6 states** with
 | 3 | `S_BLOCKED` | 3 failed attempts. Red LED 300/700ms. | 5s |
 | 4 | `S_INTRUSION_MONITOR` | Hall + mic monitoring. | 2s |
 | 5 | `S_ENV_MONITOR` | Temp + light monitoring (RunningAverage). | 4s |
-| 6 | `S_ALARM` | Buzzer ON. Red LED 100/500ms. | 2s + triple rearm |
+| 6 | `S_ALARM` | Buzzer ON (`tone()` 1kHz). RGB red fast blink 100/500ms. | 2s + triple rearm (alarmCount) |
 
 ### Main Transitions
 
@@ -113,7 +114,7 @@ Hall or microphone trigger → ALARM (2s, buzzer + LED) → INTRUSION_MONITOR �
 1. Door opens → reed switch triggers `attachInterrupt(INT2, doorISR, CHANGE)`
 2. `doorISR()` sets `doorChanged = true` (microsecond response, no polling)
 3. `updateState()` reads `doorChanged` → sets `hallDoorOpen = true` → `trig = TRIG_INTRUSION`
-4. Transition to `S_ALARM` → buzzer ON + LED flash (100/500ms)
+4. Transition to `S_ALARM` → `tone()` 1kHz (non-blocking) + RGB red flash (100/500ms)
 5. Subsequent door OPEN events (physical CHANGE) increment `alarmCount` (edge-triggered)
 6. Mic events (polled every 200ms) also increment `alarmCount` if `micVal > 800`
 7. 3 events within 12s (`T_TRIPLE`) → alarm timer reset
@@ -161,29 +162,19 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 
 | Section | Lines | Content |
 |---------|-------|---------|
-| Header | 1-24 | Comments, description, transition diagram |
-| Includes | 26-36 | Libraries: Arduino, StateMachineLib, AsyncTaskLib, Keypad, Servo, LiquidCrystal, RunningAverage, EEPROM |
-| Pin Defs | 38-65 | Pin assignments (D2-D12, D21 reed switch, D22-D27, A0-A2) |
-| Timings | 67-79 | Constants: T_UNLOCK, T_LOCKOUT, T_ENV_MONITOR, T_ALARM, etc. |
-| Thresholds | 81-87 | TEMP_LOW/HIGH, LIGHT_MIN, SOUND_HIGH (HALL_OPEN removed) |
-| PIN/Pin History | 89-105 | Min/max digits, max uses, Steinhart-Hart, history length |
-| EEPROM Layout | 107-122 | Address map: magic, count, users (24 bytes each, 10 max) |
-| Enums | 124-145 | State (6), Trigger (4), Role (4) |
-| Time Windows | 147-165 | Hardcoded access schedules per role |
-| Global Objects | 167-195 | FSM, Keypad, Servo, LCD, RunningAverages, AsyncTask |
-| State Variables | 197-230 | pinBuf, failCount, alarmCount, blink state, menu state, **doorChanged (volatile)** |
-| ISR | 232-240 | **doorISR()** — sets `doorChanged = true` |
-| EEPROM Funcs | 242-295 | initEEPROM, loadUser, saveUser |
-| Access Validation | 297-365 | findUserByPin, pinIsUnique, rotatePin, validateAccess |
-| Actuator Helpers | 367-375 | setLED, setBuzzer, unlockDoor, lockDoor |
-| LCD Display | 377-429 | per-state formatting |
-| FSM Handlers | 431-500 | onEnter/onLeave for each state |
-| Input Processing | 502-569 | handleMenuKey, handlePinEntry, processInput |
-| State Update | 571-710 | **Interrupt flag processing**, state timing, sensor monitoring, LED blink, LCD refresh |
-| FSM Setup | 712-760 | setupFSM with all transitions |
-| AsyncTask | 762-780 | Sensor averaging task (200ms) — **hall removed**, mic + NTC + LDR only |
-| setup() | 782-810 | Initialization: pins, servo, LCD, EEPROM, tasks, **attachInterrupt**, FSM |
-| loop() | 812-822 | processInput → updateState → sensorTask.Update() → fsm.Update() |
+| Header | 1-45 | Block comment, revision history, transition diagram |
+| Includes + Config | 47-100 | Libraries, `SIMULATOR_BUILD` toggle, pin assignments (v2: LCD on 2/3/4/5/11/12, RGB on 22/24/26, servo D10, buzzer D9, keypad D29-D43) |
+| Constants | 102-235 | Timing, thresholds, PIN policy, role enums, EEPROM layout, Steinhart-Hart coefficients |
+| EEPROM Functions | 237-330 | `initEEPROM()`, `loadUser()`, `saveUser()`, `addUser()` |
+| Access Validation | 332-490 | `findUserByPin()`, `pinIsUnique()`, `rotatePin()`, `validateAccess()` with role/time check |
+| Actuator Helpers | 492-575 | `setRGB()`, `ledOff()`, `ledRed()`, `ledGreen()`, `ledBlue()`, `setBuzzer()` (via `tone()`), `unlockDoor()`, `lockDoor()` |
+| Display | 577-825 | `updateDisplay()` — per-state LCD formatting with role name in OPEN, event count in ALARM, door status in intrusion |
+| FSM Callbacks | 827-985 | `onEnterIdle()` to `onLeaveAlarm()` — 12 handlers (enter/leave × 6 states) |
+| Input | 987-1170 | `handleMenuKey()`, `handlePinEntry()`, `processInput()` — PIN entry, menu flow, `closeMenu()`, SIMULATOR test keys A/B |
+| State Update | 1172-1490 | `updateState()` — interrupt flag processing, state timing, sensor monitoring, `updateBlinkPattern()`, LCD refresh |
+| FSM Setup | 1492-1590 | `setupFSM()` — all transitions registered |
+| Sensors | 1592-1710 | `readSensors()`, `readNTC()`, `readLDR()`, `readMicrophone()` — AsyncTask-driven at 200ms, RunningAverage (5 samples) |
+| setup() + loop() | 1712-1770 | Init: pins, servo, LCD, EEPROM, tasks, `attachInterrupt`, FSM. Loop: `processInput()` → `updateState()` → `sensorTask.Update()` → `fsm.Update()` |
 
 ---
 
@@ -191,14 +182,16 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 
 | Pin | Function | Type | Notes |
 |-----|----------|------|-------|
-| D2-D5 | Keypad Rows (4x4) | INPUT_PULLUP | Matrix rows |
-| D6-D9 | Keypad Columns | INPUT | Matrix columns |
-| D10 | RED_LED | OUTPUT | Alarm/block pattern |
-| D11 | BUZZER | OUTPUT | Piezo, on in ALARM |
-| D12 | SERVO | OUTPUT | PWM, door lock |
-| D22 | LCD_RS | OUTPUT | LCD register select |
-| D23 | LCD_EN | OUTPUT | LCD enable |
-| D24-D27 | LCD_D4-D7 | OUTPUT | LCD data lines (4-bit) |
+| D29, D31, D33, D35 | Keypad Rows (4x4) | INPUT_PULLUP | Matrix rows |
+| D37, D39, D41, D43 | Keypad Columns | INPUT | Matrix columns |
+| D10 | SERVO | OUTPUT | PWM, door lock (0°/90°) |
+| D9 | BUZZER | OUTPUT | Piezo via `tone()`, non-blocking |
+| D22 | RGB_LED_R | OUTPUT | Red channel — alarm/block blink |
+| D24 | RGB_LED_G | OUTPUT | Green channel — access granted |
+| D26 | RGB_LED_B | OUTPUT | Blue channel — monitor mode |
+| D12 | LCD_RS | OUTPUT | LCD register select |
+| D11 | LCD_EN | OUTPUT | LCD enable |
+| D5, D4, D3, D2 | LCD_D4-D7 | OUTPUT | LCD data lines (4-bit) |
 | D21 | DOOR_SENSOR | INPUT_PULLUP | Reed switch (INT2, interrupt) |
 | A0 | MICROPHONE | INPUT | KY-037 sound |
 | A1 | NTC_THERMISTOR | INPUT | KY-013 temp |
@@ -258,12 +251,18 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 | `SENSOR_INTERVAL` | 200 ms | AsyncTask sensor read interval |
 | `LCD_INTERVAL` | 250 ms | LCD refresh rate |
 
-### LED Blink Patterns (Red LED)
+### RGB LED Patterns
 
-| State | On | Off | Pattern |
-|-------|----|-----|---------|
-| `S_BLOCKED` | 300 ms | 700 ms | Slow flash |
-| `S_ALARM` | 100 ms | 500 ms | Fast flash |
+The system uses a 3-pin RGB LED (common cathode) for visual status:
+
+| State | Color | On | Off | Pattern |
+|-------|-------|----|-----|---------|
+| `S_IDLE` | Off | — | — | Idle, no auth activity |
+| `S_OPEN` | Green | — | — | Solid for 2s |
+| `S_BLOCKED` | Red | 300 ms | 700 ms | Slow flash for 5s |
+| `S_INTRUSION_MONITOR` | Blue | — | — | Solid monitor mode |
+| `S_ENV_MONITOR` | Blue | — | — | Solid monitor mode |
+| `S_ALARM` | Red | 100 ms | 500 ms | Fast flash for 2s |
 
 ---
 
@@ -344,10 +343,18 @@ scripts/build.sh full        # clean + deps + build
 scripts/build.sh -v build    # Verbose
 ```
 
+### Simulator Build Toggle
+
+Set `#define SIMULATOR_BUILD 1` at line 55 of `src/main.ino` for simulator
+compatibility (Wokwi, Tinkercad). This replaces `StateMachineLib` with a manual
+switch/case FSM and enables test keys `A`/`B` for direct state transitions.
+The toggle is **off by default** (`#define SIMULATOR_BUILD 0`) for the
+physical Arduino Mega prototype.
+
 **Memory usage (Arduino Mega):**
 ```
-RAM:    741 bytes (9.0%) of 8192
-Flash:  17404 bytes (6.9%) of 253952
+RAM:    790 bytes (9.6%) of 8192
+Flash:  19378 bytes (7.6%) of 253952
 ```
 
 ---
@@ -357,7 +364,8 @@ Flash:  17404 bytes (6.9%) of 253952
 ```
 Arduino-Project/
 ├── src/
-│   └── main.ino              # Full implementation (~560 lines)
+│   ├── main.ino              # Full implementation (~1770 lines)
+│   └── v2_without_fsm_main.ino.txt  # Simulator-tested baseline (reference)
 ├── lib/
 │   └── StateMachineLib/       # Local FSM library
 ├── spec/

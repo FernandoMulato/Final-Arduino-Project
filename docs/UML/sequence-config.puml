@@ -2,6 +2,7 @@
 ' ====================================================================
 ' Sequence diagram - PIN change via menu (within IDLE state)
 ' From IDLE, press # with no digits -> menu -> change PIN -> save
+' Shows confirmation message with delay(1500) before returning
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -15,13 +16,13 @@ participant "EEPROM" as EEP #D4E6F1
 participant "LCD\n16x2" as LCD #D4E6F1
 
 == IDLE - entering menu mode ==
-note right: State S_IDLE\nLCD: "IDLE", "Enter PIN:"
+note right: State S_IDLE\nLCD: "IDLE", "Enter PIN:"\nRGB: off
 
-USR -> KPD: Presses '#' (no digits entered)
+USR -> KPD: Presses '#' (no digits)
 KPD -> SYS: getKey() = '#'
 SYS -> SYS: pinLen == 0 -> menu mode
 SYS -> SYS: menuActive = true, menuStep = 0
-LCD -> SYS: "CHANGE PIN"\n"Old PIN:****"
+LCD -> SYS: "CHANGE PIN"\n"Old PIN:----"
 
 == Menu Step 0: Enter old PIN ==
 USR -> KPD: Presses '1','2','3','4'
@@ -46,16 +47,17 @@ SYS -> SYS: pinIsUnique(2, "5678") = true
 note right: Checked against current\nPIN + 4 history entries
 SYS -> EEP: rotatePin(2, "5678")
 note right: saveUser(userIdx, newPin,\nrole, uses=0, histIdx+1,\noldPin pushed to history[histIdx])
-SYS -> SYS: menuActive = false
-LCD -> SYS: "PIN changed"\n"Enter PIN:"
-SYS -> Serial: "[MENU] PIN changed successfully!"
-note right: pinChangeRequired flag\ncleared if was set
+SYS -> SYS: pinChangeRequired = false\n(if was set for this user)
+SYS -> LCD: "PIN changed!"\n"OK"
+note right: Confirmation message\nshown for 1.5 seconds
+SYS -> SYS: closeMenu()
+note right: Resets menu flags\nClears buffers
 
 == Alternative: Cancel ==
 USR -> KPD: Presses '*'
 KPD -> SYS: getKey() = '*'
-SYS -> SYS: menuActive = false, menuStep = 0
+SYS -> SYS: closeMenu()
 LCD -> SYS: "IDLE"\n"Enter PIN:"
-note right: Any time during menu\n'*' cancels and returns\nto idle IDLE
+note right: Any time during menu\n'*' calls closeMenu()\nand returns to IDLE
 
 @enduml

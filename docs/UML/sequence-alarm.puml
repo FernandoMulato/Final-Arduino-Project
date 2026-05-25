@@ -1,8 +1,9 @@
 @startuml IntrusionAlarm
 ' ====================================================================
 ' Sequence diagram - Intrusion and alarm (interrupt-driven)
-' Reed switch on D21 -> ISR triggers -> ALARM (2s, 100/500ms)
+' Reed switch on D21 -> ISR -> ALARM (2s, 100/500ms blink)
 ' -> INTRUSION_MONITOR -> IDLE
+' alarmCount increments per alarm entry (v2 behavior)
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -15,11 +16,12 @@ participant "doorISR()" as ISR #D5F5E3
 participant "System\n(loop)" as SYS #FFCCCC
 participant "AsyncTask\nsensorTask" as ASYNC #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
-participant "Red LED\nD10" as LED #FADBD8
-participant "Buzzer\nD11" as BUZ #FADBD8
+participant "RGB LED\nR22" as RGB #FADBD8
+participant "Buzzer\nD9" as BUZ #FADBD8
+participant "LCD\n16x2" as LCD #D4E6F1
 
 == INTRUSION MONITOR - waiting ==
-note right: State S_INTRUSION_MONITOR\nLCD: "MONITOR SEC"
+note right: State S_INTRUSION_MONITOR\nLED: blue\nLCD: "MONITOR SEC"\n"Door: CLOSED"
 
 REED -> ISR: **Door opens**\nPin goes HIGH (pullup)
 note right: attachInterrupt(CHANGE)\nImmediate — no polling!
@@ -28,56 +30,35 @@ ISR -> REED: return
 
 SYS -> SYS: updateState()\ndoorChanged == true
 SYS -> SYS: hallDoorOpen = true
-SYS -> SYS: doorChanged = false
-note right #FFCCCC: Edge consumed here\nso ALARM won't\ndouble-count
+note right: Edge consumed for\nINTRUSION_MONITOR
 SYS -> SYS: trig = TRIG_INTRUSION
 
-FSM -> SYS: Update()
 FSM -> SYS: Transition to S_ALARM
 SYS -> SYS: onEnterAlarm()
-SYS -> BUZ: HIGH
-SYS -> LED: blink active (100/500ms)
-note right: Alarm activated\nDuration: 2 seconds
+SYS -> RGB: blink RED fast (100/500ms)
+note right: Green+Blue turned OFF
+SYS -> BUZ: tone(1000) — 1kHz
+SYS -> SYS: alarmCount++
+SYS -> LCD: "!!! ALARM !!!"\n"Event #1"
 
-== ALARM - blink + buzzer ==
-loop until timer expires
-  SYS -> SYS: Blink: LED 100ms ON / 500ms OFF
+== ALARM - countdown ==
+note right: T_ALARM = 2000ms
+
+loop timer not expired
+  SYS -> SYS: updateBlinkPattern()\n100ms ON / 500ms OFF
   note right: Buzzer always ON\nduring ALARM
 end
 
-== Additional events during ALARM ==
-MIC -> ASYNC: sensorTask tick (200ms)
-ASYNC -> SYS: micVal > 800 (loud sound)
-SYS -> SYS: alarmCount = 1
-
-REED -> ISR: **Door closes then opens again**\nCHANGE x2
-ISR -> ISR: doorChanged = true
-SYS -> SYS: updateState()\ndoorChanged == true\nhallDoorOpen = true
-SYS -> SYS: alarmCount = 2
-note right: Edge-triggered: only\ncounts physical OPEN\nevents, not steady state
-
-MIC -> ASYNC: sensorTask tick
-ASYNC -> SYS: micVal > 800
-SYS -> SYS: alarmCount = 3
-note right: 3 events in <12s = TRIPLE!\nAlarm timer reset
-
-FSM -> SYS: trig = TRIG_AUTH_OK (2s expired)
-FSM -> SYS: Transition to S_INTRUSION_MONITOR
-SYS -> SYS: onLeaveAlarm()
-SYS -> BUZ: LOW
-SYS -> LED: off
-
-== INTRUSION MONITOR - 2s watch ==
-MIC -> ASYNC: sensorTask ticks\nmicVal = 350 (quiet)
-REED -> ISR: **Door closes** (CHANGE)
-ISR -> ISR: doorChanged = true
-SYS -> SYS: hallDoorOpen = false
-note right: Door closed.\nNo trigger since\nhallDoorOpen is false
-
-SYS -> SYS: No intrusion - timer expires
 FSM -> SYS: trig = TRIG_AUTH_OK (2s)
-FSM -> SYS: Transition to S_IDLE
-SYS -> SYS: onEnterIdle()
-note right: System restored
+SYS -> SYS: onLeaveAlarm()
+SYS -> BUZ: noTone()
+SYS -> RGB: ledOff()
+
+FSM -> SYS: Transition to S_INTRUSION_MONITOR
+SYS -> RGB: ledBlue()
+note right: alarmCount = 1\nready for next event
+
+== Second entry: re-alarm ==
+note right: Later: another intrusion\nalarmCount++ in onEnterAlarm()
 
 @enduml

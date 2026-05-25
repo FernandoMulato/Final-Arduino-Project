@@ -1,7 +1,7 @@
 @startuml BlockedAttempts
 ' ====================================================================
 ' Sequence diagram - Block after 3 failed attempts
-' PIN incorrect x3 -> BLOQUEO 5s (LED 300/700ms) -> IDLE
+' PIN incorrect x3 -> BLOCKED 5s (LED 300/700ms) -> IDLE
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -13,7 +13,7 @@ participant "Keypad\n4x4" as KPD #D4E6F1
 participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
-participant "Red LED\nD10" as LED #FADBD8
+participant "RGB LED\nR22" as RGB #FADBD8
 participant "LCD\n16x2" as LCD #D4E6F1
 
 == IDLE - failed attempts ==
@@ -24,26 +24,26 @@ loop 3 failed attempts
   SYS -> EEP: loadUser() - find PIN
   EEP --> SYS: PIN not found
   SYS -> SYS: failCount++
-  note right: LCD: "IDLE"\n"ERR" briefly\nfailCount = #{x}
+  note right: LCD: "IDLE ERR"\nfailCount = #{x}
 end
 
 SYS -> SYS: failCount >= 3
 SYS -> FSM: trig = TRIG_LOCKOUT
 FSM -> SYS: Transition to S_BLOCKED
 SYS -> SYS: onEnterBlocked()
-SYS -> LED: blink active (300/700ms)
-LCD -> SYS: "BLOCKED"\n"Wait 5s..."
+SYS -> RGB: blink RED active (300/700ms)
+note right: Green+Blue turned OFF\nRed channel blinks
+SYS -> LCD: "BLOCKED"\n"Wait 5s..."
 
 == BLOCKED - LED blink 5 seconds ==
 note right: T_LOCKOUT = 5000ms
 loop ~6 cycles of 300ms ON / 700ms OFF
-  SYS -> LED: ON (300ms)
-  SYS -> LED: OFF (700ms)
+  SYS -> RGB: ON (300ms)
+  SYS -> RGB: OFF (700ms)
 end
 
 FSM -> SYS: trig = TRIG_AUTH_OK (5s expired)
-SYS -> SYS: onLeaveBlocked()
-SYS -> LED: off
+SYS -> RGB: ledOff()
 FSM -> SYS: Transition to S_IDLE
 SYS -> SYS: onEnterIdle()
 note right: failCount = 0\nSystem restored

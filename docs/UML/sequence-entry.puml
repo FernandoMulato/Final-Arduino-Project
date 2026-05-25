@@ -1,7 +1,7 @@
 @startuml SuccessfulEntry
 ' ====================================================================
 ' Sequence diagram - Successful PIN entry
-' Happy path: correct PIN + role in window -> CONFIG -> unlock 2s -> IDLE
+' Happy path: correct PIN + role -> OPEN 2s -> IDLE
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -13,14 +13,13 @@ participant "Keypad\n4x4" as KPD #D4E6F1
 participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
-participant "Servo\nD12" as SRV #FADBD8
+participant "Servo\nD10" as SRV #FADBD8
 participant "LCD\n16x2" as LCD #D4E6F1
-participant "NTC\nA1" as NTC #D5F5E3
-participant "LDR\nA2" as LDR #D5F5E3
+participant "RGB LED\nR22/G24/B26" as RGB #FADBD8
 
 == IDLE - waiting ==
 SYS -> FSM: Update()
-note right: State S_IDLE\nLCD: "IDLE"\n"Enter PIN:"
+note right: State S_IDLE\nLCD: "IDLE"\n"Enter PIN:"\nRGB: off
 
 USR -> KPD: Presses '1','2','3','4'
 KPD -> SYS: getKey() = digits
@@ -32,28 +31,25 @@ KPD -> SYS: getKey() = '#'
 SYS -> SYS: validateAccess("1234")
 SYS -> EEP: loadUser() - find PIN
 EEP --> SYS: Found: user 0, role 2
-SYS -> SYS: isInTimeWindow(2) = true
-SYS -> SYS: uses++, saveUser()
+SYS -> SYS: lastAuthRole = 2, uses++
 note right: access GRANTED
 
 SYS -> FSM: trig = TRIG_AUTH_OK
 FSM -> SYS: Transition to S_OPEN
-SYS -> SYS: onEnterOpen()
+SYS -> RGB: ledGreen()
 SYS -> SRV: write(SRV_UNLOCKED) 90 deg
 note right: Door unlocked\n2 seconds
-SYS -> LCD: "ACCESS GRANTED"\n"OPEN 2s"
+SYS -> LCD: "ACCESS GRANTED"\n"Operator 2s"
 
 == UNLOCKED - countdown ==
 loop each loop iteration
-  SYS -> SYS: updateState() - check timer
-  note right: elapsed >= 2000ms?
+  SYS -> SYS: updateState()\nelapsed >= 2000ms?
 end
 
 FSM -> SYS: trig = TRIG_AUTH_OK (timer)
 FSM -> SYS: Transition to S_IDLE
-SYS -> SYS: onLeaveOpen()
 SYS -> SRV: write(SRV_LOCKED) 0 deg
-SYS -> SYS: onEnterIdle()
+SYS -> RGB: ledOff()
 note right: System back to idle
 
 == IDLE - cycle complete ==
