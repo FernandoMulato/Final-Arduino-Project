@@ -2,8 +2,8 @@
 ' ====================================================================
 ' Class diagram - Access Control and Security System
 ' Arquitectura Computacional - Arduino Mega (ATmega2560)
-' 6-state FSM with AsyncTaskLib, Servo, LiquidCrystal, RunningAverage
-' Build toggle: SIMULATOR_BUILD replaces StateMachineLib with manual FSM
+' 6-state FSM with StateMachineLib, AsyncTaskLib, EEPROM profiles
+' Based on v4_main.ino — unified hardware build
 ' ====================================================================
 
 skinparam classAttributeIconSize 0
@@ -25,6 +25,8 @@ package "Data" as dataPkg #F0F0F0 {
     3=Coordinator, 4=Manager
     uses: max 4 before PIN rotation
     history: last 4 PINs (circular)
+    PIN policy: 4-6 digits
+    EEPROM = 10 users x 24 bytes
   end note
 }
 
@@ -40,6 +42,7 @@ package "State Machine" as fsmPkg #F0F0F0 {
   }
 
   enum Trigger #B3D9FF;line:Black {
+    TRIG_NONE
     TRIG_AUTH_OK
     TRIG_LOCKOUT
     TRIG_ENV_ALARM
@@ -55,9 +58,9 @@ package "State Machine" as fsmPkg #F0F0F0 {
   }
   note right of StateMachine
     StateMachineLib v1.0.0
-    6 states, 10 transitions
-    Replaced by manual FSM
-    when SIMULATOR_BUILD=1
+    6 states, 11 transitions
+    10 transitions use millis() timer
+    + 1 for auth/lockout events
   end note
 }
 
@@ -71,6 +74,7 @@ package "Peripherals" as perifPkg #F0F0F0 {
     4x4 matrix on D29,D31,D33,D35
     / D37,D39,D41,D43
     Map: 1-3A, 4-6B, 7-9C, *0#D
+    SRAM arrays (not PROGMEM)
   end note
 
   class EEPROM #D4E6F1;line:Black {
@@ -81,13 +85,15 @@ package "Peripherals" as perifPkg #F0F0F0 {
   note left of EEPROM
     4KB on ATmega2560
     Layout:
-    0: Magic 0xA5
-    1: User count
-    2+: Users (10 x 24 bytes)
-    Each user: PIN[4]+role+uses
-    +active+histIdx+history[16]
-    Seed users: 1234(Mgr), 5678(Op),
-    9999(Sec) — on first boot
+    0x00: Magic 0xA5
+    0x01: User count
+    0x02+: Users (10 x 24 bytes)
+    User record:
+      PIN[4] + role + uses + active
+      + histIdx + history[16]
+    Seed users (first boot):
+      1234 (Manager), 5678 (Operator)
+      9999 (Security)
   end note
 
   class LiquidCrystal #D4E6F1;line:Black {
@@ -97,12 +103,12 @@ package "Peripherals" as perifPkg #F0F0F0 {
     {method} +clear(): void
   }
   note right of LiquidCrystal
-    LCD 16x2
-    Parallel 4-bit mode
+    LCD 16x2 parallel 4-bit
     RS=12, EN=11, D4=5, D5=4
     D6=3, D7=2
-    Status codes: IDLE, OPEN
-    BLOCKED, ALARM, MONITOR
+    Messages: IDLE, ACCESS GRANTED,
+    BLOCKED, MONITOR, !!! ALARM !!!
+    PIN entry: **** #=ok
   end note
 
   class AsyncTask #D4E6F1;line:Black {
@@ -114,9 +120,9 @@ package "Peripherals" as perifPkg #F0F0F0 {
   }
   note right of AsyncTask
     AsyncTaskLib 1.0.0
-    Sensor averaging: 200ms
-    Read NTC + LDR + mic
-    Non-blocking timing
+    sensorTask: 200ms interval
+    Reads NTC (A1), LDR (A2), MIC (A0)
+    Non-blocking sensor averaging
   end note
 }
 
@@ -129,7 +135,8 @@ package "Sensors" as sensPkg #F0F0F0 {
     Pin A1 — KY-013
     Steinhart-Hart equation
     Averaged via RunningAverage (5)
-    Threshold: <20 C or >50 C
+    Threshold: <20°C or >50°C
+    Clamp: sane to 25°C on error
   end note
 
   class SensorLDR #D5F5E3;line:Black {
@@ -138,7 +145,9 @@ package "Sensors" as sensPkg #F0F0F0 {
   note right of SensorLDR
     Pin A2 — KY-018
     Averaged via RunningAverage (5)
-    Threshold: ADC < 100
+    Inverted: 1023-ADC so higher=more light
+    Threshold: ADC < 100 (dark) → IDLE
+    ADC > 900 (bright) → alarm
   end note
 
   class SensorHall #D5F5E3;line:Black {
@@ -148,9 +157,10 @@ package "Sensors" as sensPkg #F0F0F0 {
   note right of SensorHall
     Pin D21 (INT2) — reed switch
     attachInterrupt(CHANGE)
-    ISR sets doorChanged flag
-    Loop reads pin on flag
-    Instant door open detection
+    INPUT_PULLUP: closed=LOW, open=HIGH
+    ISR sets doorChanged flag (minimal)
+    Loop reads doorChanged + digitalRead()
+    Edge detection for ALARM counting
   end note
 
   class Microphone #D5F5E3;line:Black {
@@ -158,6 +168,7 @@ package "Sensors" as sensPkg #F0F0F0 {
   }
   note right of Microphone
     Pin A0 — KY-037
+    Polled at 200ms by AsyncTask
     Threshold: ADC > 800
   end note
 
@@ -181,8 +192,8 @@ package "Actuators" as actPkg #F0F0F0 {
   }
   note right of Servo
     Pin D10 (PWM)
-    Locked: 0 degrees
-    Unlocked: 90 degrees
+    Locked: 0° (SRV_LOCKED)
+    Unlocked: 90° (SRV_UNLOCKED)
     Duration: 2s (T_UNLOCK)
   end note
 
@@ -195,8 +206,8 @@ package "Actuators" as actPkg #F0F0F0 {
     {method} +updateBlinkPattern(): void
   }
   note right of RGB_LED
-    R=22, G=24, B=26
-    GREEN on ACCESS GRANTED
+    R=A3, G=A4, B=A5 (analog→digital)
+    GREEN on ACCESS GRANTED (S_OPEN)
     BLUE on MONITOR modes
     RED blink on BLOCKED (300/700ms)
     RED fast blink on ALARM (100/500ms)
@@ -209,7 +220,8 @@ package "Actuators" as actPkg #F0F0F0 {
   note right of Buzzer
     Pin D9 — Piezo
     tone() — non-blocking square wave
-    ON during ALARM state only
+    1kHz during ALARM state
+    200ms beep on BLOCKED entry
   end note
 }
 
@@ -219,55 +231,73 @@ package "Controller" as sysPkg #F0F0F0 {
     {field} currentState: State
     {field} trigger: Trigger
     {field} pinBuf[7]: char
+    {field} pinLen: uint8_t
     {field} failCount: uint8_t
     {field} temperature: float
     {field} lightLevel: int
+    {field} micVal: int
     {field} alarmCount: uint8_t
+    {field} firstAlarmTime: unsigned long
     {field} lastAuthRole: uint8_t
     {field} lastAuthUserIdx: uint8_t
     {field} pinChangeRequired: bool
     {field} pinChangeUserIdx: uint8_t
+    {field} menuActive: bool
+    {field} menuStep: uint8_t
+    {field} menuBuf[7]: char
+    {field} menuUserIdx: uint8_t
     ..
     {method} +setupFSM(): void
-    {method} +updateFSM(): void [SIMULATOR_BUILD]
     {method} +processInput(): void
     {method} +updateState(): void
     {method} +updateDisplay(): void
+    {method} +updateBlinkPattern(): void
     {method} +validateAccess(pin): bool
     {method} +findUserByPin(pin): uint8_t
+    {method} +pinIsUnique(idx, pin): bool
     {method} +rotatePin(idx, newPin): void
     {method} +addUser(pin, role): void
     {method} +initEEPROM(): void
+    {method} +handlePinEntry(key): void
+    {method} +handleMenuKey(key): void
     {method} +closeMenu(): void
   }
   note bottom of System
-    Single-file: src/main.ino
-    ~1770 lines, 0 external modules
-    F() macro for PROGMEM strings
-    AsyncTaskLib for sensor timing
+    Single-file: src/main.ino (v4)
+    1727 lines, 0 external modules
+    StateMachineLib for FSM (real build)
+    AsyncTaskLib for sensor timing (200ms)
     millis() for state timing + blink
     tone() for buzzer (non-blocking)
-    SIMULATOR_BUILD: manual FSM,
-    test keys A/B, no StateMachineLib
+    F() macro for all PROGMEM strings
+    Key features:
+    • 6-state FSM, 11 transitions
+    • PIN auth with history rotation
+    • Menu: PIN change (old→new→confirm)
+    • Triple alarm detection (3 in 12s)
+    • Debug keys A/B from IDLE
+    • PIN timeout after 10s idle
+    • PIN expiration after 4 uses
+    • Hall sensor ISR on D21 (INT2)
   end note
 }
 
 ' === RELATIONSHIPS ===
 System --> State : "uses"
 System --> Trigger : "fires"
-System --> StateMachine : "controls (real)"
+System --> StateMachine : "controls"
 System --> Keypad : "reads keys"
 System --> EEPROM : "persists data"
 System --> LiquidCrystal : "displays status"
-System --> AsyncTask : "schedules reads"
-System --> SensorNTC : "reads temp"
-System --> SensorLDR : "reads light"
-System --> SensorHall : "reads door"
-System --> Microphone : "reads sound"
+System --> AsyncTask : "schedules sensor reads"
+System --> SensorNTC : "reads temp (A1)"
+System --> SensorLDR : "reads light (A2)"
+System --> SensorHall : "reads door (D21 INT2)"
+System --> Microphone : "reads sound (A0)"
 System --> RunningAverage : "smooths NTC+LDR"
-System --> Servo : "actuates lock"
-System --> RGB_LED : "status indicator"
-System --> Buzzer : "sound alarm"
+System --> Servo : "actuates lock (D10)"
+System --> RGB_LED : "status indicator (A3-A5)"
+System --> Buzzer : "sound alarm (D9)"
 System --> User : "manages"
 
 SensorNTC --> RunningAverage : "uses"

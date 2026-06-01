@@ -1,7 +1,8 @@
 @startuml SuccessfulEntry
 ' ====================================================================
-' Sequence diagram - Successful PIN entry
+' Sequence diagram - Successful PIN entry (v4_main.ino)
 ' Happy path: correct PIN + role -> OPEN 2s -> IDLE
+' Shows PIN expiration check after uses >= PIN_MAX_USES
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -9,17 +10,17 @@ skinparam defaultFontName SansSerif
 skinparam sequenceMessageAlign center
 
 actor "User" as USR #FFFACD
-participant "Keypad\n4x4" as KPD #D4E6F1
+participant "Keypad 4x4\nD29,D31,D33,D35\nD37,D39,D41,D43" as KPD #D4E6F1
 participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
-participant "StateMachine" as FSM #B3D9FF
+participant "StateMachine\n(11 transitions)" as FSM #B3D9FF
 participant "Servo\nD10" as SRV #FADBD8
-participant "LCD\n16x2" as LCD #D4E6F1
-participant "RGB LED\nR22/G24/B26" as RGB #FADBD8
+participant "LCD 16x2\nRS=12 EN=11 D4-D7=5,4,3,2" as LCD #D4E6F1
+participant "RGB LED\nR=A3 G=A4 B=A5" as RGB #FADBD8
 
 == IDLE - waiting ==
 SYS -> FSM: Update()
-note right: State S_IDLE\nLCD: "IDLE"\n"Enter PIN:"\nRGB: off
+note right: State S_IDLE\nLCD: "IDLE" / "Enter PIN:"\nRGB: off
 
 USR -> KPD: Presses '1','2','3','4'
 KPD -> SYS: getKey() = digits
@@ -28,16 +29,17 @@ note right: LCD: "IDLE"\n"**** #=ok"
 
 USR -> KPD: Presses '#' (confirm)
 KPD -> SYS: getKey() = '#'
-SYS -> SYS: validateAccess("1234")
-SYS -> EEP: loadUser() - find PIN
+SYS -> SYS: handlePinEntry('#')\nvalidateAccess("1234")
+SYS -> EEP: findUserByPin("1234")
 EEP --> SYS: Found: user 0, role 2
 SYS -> SYS: lastAuthRole = 2, uses++
 note right: access GRANTED
+SYS -> SYS: uses >= PIN_MAX_USES(4)?\n→ pinChangeRequired=true\npinChangeUserIdx=0
 
 SYS -> FSM: trig = TRIG_AUTH_OK
 FSM -> SYS: Transition to S_OPEN
 SYS -> RGB: ledGreen()
-SYS -> SRV: write(SRV_UNLOCKED) 90 deg
+SYS -> SRV: write(SRV_UNLOCKED) 90°
 note right: Door unlocked\n2 seconds
 SYS -> LCD: "ACCESS GRANTED"\n"Operator 2s"
 
@@ -48,12 +50,12 @@ end
 
 FSM -> SYS: trig = TRIG_AUTH_OK (timer)
 FSM -> SYS: Transition to S_IDLE
-SYS -> SRV: write(SRV_LOCKED) 0 deg
+SYS -> SRV: write(SRV_LOCKED) 0°
 SYS -> RGB: ledOff()
-note right: System back to idle
+note right: System back to idle\npinChangeRequired persists\nfor next authentication
 
 == IDLE - cycle complete ==
 LCD -> SYS: "IDLE"\n"Enter PIN:"
-note right: Ready for next access
+note right: Ready for next access\nIf PIN expired,\nuser must change via menu
 
 @enduml

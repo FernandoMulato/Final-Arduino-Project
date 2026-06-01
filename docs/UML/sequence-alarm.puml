@@ -1,9 +1,9 @@
 @startuml IntrusionAlarm
 ' ====================================================================
-' Sequence diagram - Intrusion and alarm (interrupt-driven)
-' Reed switch on D21 -> ISR -> ALARM (2s, 100/500ms blink)
+' Sequence diagram - Intrusion and alarm (v4_main.ino)
+' Reed switch on D21 (INT2) -> ISR -> ALARM (2s, 100/500ms blink)
 ' -> INTRUSION_MONITOR -> IDLE
-' alarmCount increments per alarm entry (v2 behavior)
+' Triple alarm detection: 3 events in 12s (T_TRIPLE) extends alarm
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -14,16 +14,16 @@ participant "Reed Switch\nD21 (INT2)" as REED #D5F5E3
 participant "Microphone\nA0" as MIC #D5F5E3
 participant "doorISR()" as ISR #D5F5E3
 participant "System\n(loop)" as SYS #FFCCCC
-participant "AsyncTask\nsensorTask" as ASYNC #D4E6F1
+participant "AsyncTask\nsensorTask\n(200ms)" as ASYNC #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
-participant "RGB LED\nR22" as RGB #FADBD8
+participant "RGB LED\nR=A3" as RGB #FADBD8
 participant "Buzzer\nD9" as BUZ #FADBD8
-participant "LCD\n16x2" as LCD #D4E6F1
+participant "LCD 16x2" as LCD #D4E6F1
 
-== INTRUSION MONITOR - waiting ==
-note right: State S_INTRUSION_MONITOR\nLED: blue\nLCD: "MONITOR SEC"\n"Door: CLOSED"
+== INTRUSION MONITOR - watching ==
+note right: State S_INTRUSION_MONITOR\nLED: blue\nLCD: "MONITOR SEC"\n"Door: CLOSED"\nalarmCount=0
 
-REED -> ISR: **Door opens**\nPin goes HIGH (pullup)
+REED -> ISR: **Door opens**\nPin goes HIGH (INPUT_PULLUP)
 note right: attachInterrupt(CHANGE)\nImmediate — no polling!
 ISR -> ISR: doorChanged = true
 ISR -> REED: return
@@ -37,8 +37,9 @@ FSM -> SYS: Transition to S_ALARM
 SYS -> SYS: onEnterAlarm()
 SYS -> RGB: blink RED fast (100/500ms)
 note right: Green+Blue turned OFF
-SYS -> BUZ: tone(1000) — 1kHz
-SYS -> SYS: alarmCount++
+SYS -> BUZ: tone(1000) — 1kHz continuous
+SYS -> SYS: alarmCount++ (now = 1)
+SYS -> SYS: if alarmCount==1 → firstAlarmTime = now
 SYS -> LCD: "!!! ALARM !!!"\n"Event #1"
 
 == ALARM - countdown ==
@@ -58,7 +59,26 @@ FSM -> SYS: Transition to S_INTRUSION_MONITOR
 SYS -> RGB: ledBlue()
 note right: alarmCount = 1\nready for next event
 
-== Second entry: re-alarm ==
-note right: Later: another intrusion\nalarmCount++ in onEnterAlarm()
+== Second intrusion: triple alarm test ==
+note right: Later: door opens again\nwithin T_TRIPLE (12s)
+
+REED -> ISR: **Door opens again**
+ISR -> ISR: doorChanged = true
+SYS -> SYS: updateState() -> trig = TRIG_INTRUSION
+FSM -> SYS: Transition to S_ALARM
+SYS -> SYS: onEnterAlarm()\nalarmCount++ (now = 2)
+note right: alarmCount < 3\nnormal alarm cycle
+
+FSM -> SYS: trig = TRIG_AUTH_OK (2s)
+FSM -> SYS: Transition to S_INTRUSION_MONITOR
+
+== Third intrusion: triple alarm fires ==
+note right: 3rd event still within\nT_TRIPLE (12s from firstAlarmTime)
+
+REED -> ISR: **Door opens again (3rd time)**
+SYS -> SYS: onEnterAlarm()\nalarmCount++ (now = 3)
+SYS -> SYS: alarmCount >= 3 AND\n(now - firstAlarmTime) < T_TRIPLE?
+note right: TRIPLE ALARM!\nalarmCount=0\nstateEntryTime=now\n(extends alarm duration)
+SYS -> SYS: Buzzer stays ON\nLED continues fast blink\nExtra time added to T_ALARM
 
 @enduml
