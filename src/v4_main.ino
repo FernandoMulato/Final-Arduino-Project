@@ -50,31 +50,13 @@
 // ============================================================================
 
 #include <Arduino.h>
-#ifndef SIMULATOR_BUILD
 #include <StateMachineLib.h>
-#endif
 #include <EEPROM.h>
 #include <Keypad.h>
 #include <Servo.h>
 #include <LiquidCrystal.h>
 #include <RunningAverage.h>
 #include <AsyncTaskLib.h>
-
-/** @} */
-
-// ============================================================================
-// @name Configuración de Compilación
-// @brief Selecciona entre hardware real y simulador
-// ============================================================================
-
-/**
- * @brief Toggle de compilación para entornos de simulación.
- * @details Los simuladores (Wokwi, Tinkercad, etc.) pueden no soportar
- * StateMachineLib. Descomentar para reemplazar la FSM basada en librería
- * por una implementación manual con switch/case. El resto de la funcionalidad,
- * pines, sensores, EEPROM, LCD y temporización se mantienen idénticos.
- */
-// #define SIMULATOR_BUILD
 
 /** @} */
 
@@ -359,9 +341,7 @@ const char* ROLE_NAMES[5] = {
  * @brief Instancia de la Máquina de Estados Finita.
  * @details 6 estados, 10 transiciones usando StateMachineLib.
  */
-#ifndef SIMULATOR_BUILD
 StateMachine fsm(6, 10);
-#endif
 
 /** @brief Estado actual de la FSM, cacheado para display y lógica. */
 State currentState = S_IDLE;
@@ -590,10 +570,6 @@ void onEnterAlarm();
 /** @brief Manejador de salida del estado S_ALARM (desactiva zumbador + LED). */
 void onLeaveAlarm();
 
-#ifdef SIMULATOR_BUILD
-/** @brief Ejecutor manual de transiciones FSM para compilaciones con simulador. */
-void updateFSM();
-#endif
 
 /** @} */
 
@@ -1305,19 +1281,7 @@ void processInput() {
 
   if (currentState == S_IDLE) {
     if (key != NO_KEY) {
-#ifdef SIMULATOR_BUILD
-      // Teclas de prueba para simulador — saltan la FSM directamente
-      if (!menuActive) {
-        if (key == 'A') {
-          Serial.println(F("[TEST] ENV_MONITOR"));
-          onLeaveIdle(); onEnterEnvMonitor(); return;
-        }
-        if (key == 'B') {
-          Serial.println(F("[TEST] INTRUSION_MONITOR"));
-          onLeaveIdle(); onEnterIntrusionMonitor(); return;
-        }
-      }
-#endif
+
       if (menuActive) {
         handleMenuKey(key);
       } else {
@@ -1473,94 +1437,6 @@ void updateState() {
 
 /** @} */
 
-#ifdef SIMULATOR_BUILD
-
-// ============================================================================
-// @name FSM para Simulador
-// @brief FSM manual para compilaciones con simulador (sin StateMachineLib)
-// @{
-// ============================================================================
-
-/**
- * @brief Ejecutor manual de transiciones de la FSM.
- * @details Reemplaza StateMachineLib::Update() para compilaciones con simulador.
- * Evalúa las mismas 10 transiciones que setupFSM() usando un patrón
- * simple de switch/case. Llama a los mismos manejadores onEnter/onLeave.
- *
- * Tabla de transiciones (idéntica al hardware real):
- * @code{.txt}
- * S_IDLE --[TRIG_AUTH_OK]--> S_OPEN
- * S_IDLE --[TRIG_LOCKOUT]--> S_BLOCKED
- * S_OPEN --[timer]--> S_IDLE
- * S_BLOCKED --[timer]--> S_IDLE
- * S_ENV_MONITOR --[TRIG_ENV_ALARM]--> S_ALARM
- * S_ENV_MONITOR --[timer]--> S_IDLE
- * S_INTRUSION_MONITOR --[TRIG_INTRUSION]--> S_ALARM
- * S_INTRUSION_MONITOR --[timer]--> S_IDLE
- * S_ALARM --[timer]--> S_INTRUSION_MONITOR
- * @endcode
- */
-void updateFSM() {
-  State nextState = currentState;
-
-  // --- Evaluar transiciones según el estado actual y el disparador pendiente ---
-  switch (currentState) {
-    case S_IDLE:
-      if (trig == TRIG_AUTH_OK)        nextState = S_OPEN;
-      else if (trig == TRIG_LOCKOUT)   nextState = S_BLOCKED;
-      break;
-
-    case S_OPEN:
-      if (trig == TRIG_AUTH_OK)        nextState = S_IDLE;
-      break;
-
-    case S_BLOCKED:
-      if (trig == TRIG_AUTH_OK)        nextState = S_IDLE;
-      break;
-
-    case S_ENV_MONITOR:
-      if (trig == TRIG_ENV_ALARM)      nextState = S_ALARM;
-      else if (trig == TRIG_AUTH_OK)   nextState = S_IDLE;
-      break;
-
-    case S_INTRUSION_MONITOR:
-      if (trig == TRIG_INTRUSION)      nextState = S_ALARM;
-      else if (trig == TRIG_AUTH_OK)   nextState = S_IDLE;
-      break;
-
-    case S_ALARM:
-      if (trig == TRIG_AUTH_OK)        nextState = S_INTRUSION_MONITOR;
-      break;
-  }
-
-  // --- Ejecutar transición si el estado cambió ---
-  if (nextState != currentState) {
-    // Llamar onLeave para el estado actual
-    switch (currentState) {
-      case S_IDLE:               onLeaveIdle(); break;
-      case S_OPEN:               onLeaveOpen(); break;
-      case S_BLOCKED:            onLeaveBlocked(); break;
-      case S_ENV_MONITOR:        onLeaveEnvMonitor(); break;
-      case S_INTRUSION_MONITOR:  onLeaveIntrusionMonitor(); break;
-      case S_ALARM:              onLeaveAlarm(); break;
-      default: break;
-    }
-    // Llamar onEnter para el nuevo estado (los manejadores establecen currentState + trig = TRIG_NONE)
-    switch (nextState) {
-      case S_IDLE:               onEnterIdle(); break;
-      case S_OPEN:               onEnterOpen(); break;
-      case S_BLOCKED:            onEnterBlocked(); break;
-      case S_ENV_MONITOR:        onEnterEnvMonitor(); break;
-      case S_INTRUSION_MONITOR:  onEnterIntrusionMonitor(); break;
-      case S_ALARM:              onEnterAlarm(); break;
-      default: break;
-    }
-  }
-}
-
-/** @} */
-
-#endif // SIMULATOR_BUILD
 
 // ============================================================================
 // @name Configuración de la FSM
@@ -1595,7 +1471,6 @@ void updateFSM() {
  *
  * @see Trigger
  */
-#ifndef SIMULATOR_BUILD
 void setupFSM() {
   // Manejadores de entrada de estado
   fsm.SetOnEntering(S_IDLE, onEnterIdle);
@@ -1634,8 +1509,6 @@ void setupFSM() {
   // Alarma -> monitoreo de intrusión cuando expira el temporizador
   fsm.AddTransition(S_ALARM, S_INTRUSION_MONITOR, timedDone);
 }
-
-#endif // !SIMULATOR_BUILD
 
 /** @} */
 
@@ -1735,13 +1608,8 @@ void setup() {
   sensorTask.Start();
 
   // FSM
-#ifndef SIMULATOR_BUILD
   setupFSM();
   fsm.SetState(S_IDLE, false, true);
-#else
-  currentState = S_IDLE;
-  onEnterIdle();
-#endif
 
   Serial.println(F("=== ACCESS CONTROL & SECURITY ==="));
   Serial.println(F("Keys: [0-9]=digit [#]=ok [*]=cancel"));
@@ -1784,11 +1652,7 @@ void loop() {
   sensorTask.Update();
 
   // Actualizar FSM (verificación de transiciones de estado)
-#ifndef SIMULATOR_BUILD
   fsm.Update();
-#else
-  updateFSM();
-#endif
 }
 
 /** @} */
