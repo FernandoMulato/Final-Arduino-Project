@@ -1680,7 +1680,6 @@ void updateState()
     lightLevel = (int)lightAvg.getAverage();
   }
 
-  // Justo después del cálculo de sensores, dentro de updateState():
   static unsigned long lastDebug = 0;
   if (now - lastDebug >= 500)
   {

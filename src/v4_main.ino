@@ -3,20 +3,31 @@
  * @brief Sistema de Control de Acceso y Seguridad para Arduino Mega.
  *
  * @details
- * Versión v4 — Fusión de main.ino (lógica FSM correcta, servo funcional)
- * con corrección de pines RGB a analógicos según el conexionado físico.
+ * Versión v4 — Implementación hardware completa con StateMachineLib.
+ * La lógica (FLASH, EEPROM, sensores, umbrales, temporización) se unificó
+ * con la versión simulador (simulator/simulator.ino) para mantener paridad
+ * de comportamiento entre ambos builds.
  *
  * Proyecto académico para Arquitectura Computacional. Implementa una
- * Máquina de Estados Finita (FSM) de 6 estados con las siguientes transiciones:
- * @code{.cpp}
+ * Máquina de Estados Finita (FSM) de 6 estados con StateMachineLib.
+ *
+ * @par Transiciones
+ * @code{.txt}
  * IDLE -> (PIN correcto + rol) -> OPEN -> (2s) -> IDLE
  * IDLE -> (3 fallos) -> BLOCKED -> (5s) -> IDLE
- * ENV_MONITOR -> (umbral) -> ALARM -> (2s) -> INTRUSION_MONITOR
- * ENV_MONITOR -> (4s sin evento) -> IDLE
- * INTRUSION_MONITOR -> (hall/mic) -> ALARM (triple rearmer 12s)
+ * IDLE -> (tecla A debug) -> ENV_MONITOR
+ * IDLE -> (tecla B debug) -> INTRUSION_MONITOR
+ * ENV_MONITOR -> (umbral temp/light) -> ALARM -> (2s) -> INTRUSION_MONITOR
+ * ENV_MONITOR -> (luz baja) -> IDLE
+ * INTRUSION_MONITOR -> (hall/mic) -> ALARM (triple rearme 12s)
  * INTRUSION_MONITOR -> (2s sin evento) -> IDLE
  * ALARM -> (3 en 12s) -> bloqueo extendido -> INTRUSION_MONITOR
  * @endcode
+ *
+ * @par Diferencias con simulator/simulator.ino
+ * - Usa StateMachineLib con el mecanismo `trig`/`TRIG_*` para transiciones
+ * - El simulador reemplaza la FSM con `transitionTo()` / `applyTransition()`
+ * - El resto (pines, sensores, EEPROM, LCD, temporización) es idéntico
  *
  * @par Hardware
  * Placa: Arduino Mega (ATmega2560)
@@ -29,7 +40,7 @@
  * - Teclado: Matriz 4x4 (filas D29,D31,D33,D35 / columnas D37,D39,D41,D43)
  *
  * @par Memoria
- * SRAM: ~790B (9.6%), Flash: ~19.4KB (7.6%), EEPROM: 4KB interna
+ * SRAM: ~790B (9.6%), Flash: ~19.7KB (7.8%), EEPROM: 4KB interna
  *
  * @par Layout EEPROM
  * 10 usuarios x 24 bytes = 240 bytes
@@ -1039,18 +1050,26 @@ void onLeaveOpen() {
 /**
  * @brief Manejador de entrada al estado S_BLOCKED.
  * @details
- * Activa el patrón de parpadeo lento del LED (300ms ENCENDIDO / 700ms APAGADO)
- * durante la duración del bloqueo de 5 segundos.
+ * Emite un pitido corto de zumbador (200ms) y activa el patrón de parpadeo
+ * lento del LED (300ms ENCENDIDO / 700ms APAGADO) durante la duración del
+ * bloqueo de 5 segundos. El LED arranca encendido para feedback inmediato.
  */
 void onEnterBlocked() {
   currentState = S_BLOCKED;
   trig = TRIG_NONE;
   stateEntryTime = millis();
+
+  // Buzzer: pitido corto para indicar bloqueo
+  setBuzzer(true);
+  delay(200);
   setBuzzer(false);
-  // Apagar verde/azul, el rojo parpadeará
-  digitalWrite(PIN_LED_G, LOW); digitalWrite(PIN_LED_B, LOW);
+
+  // LED rojo parpadea — arrancar con LED encendido para feedback inmediato
+  digitalWrite(PIN_LED_G, LOW);
+  digitalWrite(PIN_LED_B, LOW);
+  digitalWrite(PIN_LED_R, HIGH);
   blinkActive = true; blinkOnMs = BLK_ON; blinkOffMs = BLK_OFF;
-  lastBlink = millis(); ledOn = false;
+  lastBlink = millis(); ledOn = true;
   Serial.println(F("[STATE] BLOCKED — 3 failed attempts, 5s block"));
 }
 
@@ -1098,18 +1117,25 @@ void onLeaveEnvMonitor() {}
 /**
  * @brief Manejador de entrada al estado S_ALARM.
  * @details
- * Activa el zumbador (continuo) y el parpadeo rápido del LED (100ms ENCENDIDO / 500ms APAGADO)
- * durante la duración de la alarma de 2 segundos.
+ * Activa el zumbador (continuo) y el parpadeo rápido del LED
+ * (100ms ENCENDIDO / 500ms APAGADO). El LED arranca encendido
+ * para feedback inmediato. Incrementa el contador de alarma y
+ * registra el timestamp de la primera alarma para detección triple.
+ *
+ * La transición de salida por tiempo la maneja la sección de
+ * temporización de `updateState()`.
  */
 void onEnterAlarm() {
   currentState = S_ALARM;
   trig = TRIG_NONE;
   stateEntryTime = millis();
   setBuzzer(true);
-  // Apagar verde/azul, el rojo parpadeará rápido
-  digitalWrite(PIN_LED_G, LOW); digitalWrite(PIN_LED_B, LOW);
+  // LED rojo parpadea — arrancar encendido para feedback inmediato
+  digitalWrite(PIN_LED_G, LOW);
+  digitalWrite(PIN_LED_B, LOW);
+  digitalWrite(PIN_LED_R, HIGH);
   blinkActive = true; blinkOnMs = ALM_ON; blinkOffMs = ALM_OFF;
-  lastBlink = millis(); ledOn = false;
+  lastBlink = millis(); ledOn = true;
   alarmCount++;
   if (alarmCount == 1) firstAlarmTime = millis();
   Serial.print(F("[STATE] ALARM — Event #"));
@@ -1273,7 +1299,11 @@ void handlePinEntry(char key) {
  * @brief Despachador principal de entrada del teclado.
  * @details
  * Solo procesa entrada en el estado S_IDLE. Lee una tecla de la librería Keypad
- * y la enruta a `handlePinEntry()` o `handleMenuKey()` según si el menú está activo.
+ * y la enruta según el contexto:
+ * - Menú activo: `handleMenuKey()`
+ * - Tecla `A`: transición directa a ENV_MONITOR (debug)
+ * - Tecla `B`: transición directa a INTRUSION_MONITOR (debug)
+ * - Otra tecla: `handlePinEntry()` para autenticación o cambio de PIN
  * También verifica el timeout de ingreso de PIN (10s).
  */
 void processInput() {
@@ -1284,6 +1314,14 @@ void processInput() {
 
       if (menuActive) {
         handleMenuKey(key);
+      } else if (key == 'A') {
+        // Tecla A → activar monitoreo ambiental
+        Serial.println(F("[INPUT] Entering ENV_MONITOR"));
+        trig = TRIG_ENV_ALARM;  // fuerza transición desde IDLE
+      } else if (key == 'B') {
+        // Tecla B → activar monitoreo de intrusión
+        Serial.println(F("[INPUT] Entering INTRUSION_MONITOR"));
+        trig = TRIG_INTRUSION;
       } else {
         handlePinEntry(key);
       }
@@ -1314,12 +1352,16 @@ void processInput() {
  *    y actualiza `hallDoorOpen` con el estado actual del pin. NO limpia
  *    `doorChanged` — los manejadores específicos de estado lo consumen.
  *
- * 2. **Temporización de estado**: Para cada estado temporizado (OPEN, BLOCKED, etc.),
- *    verifica si el tiempo transcurrido supera la duración y establece
- *    `trig = TRIG_AUTH_OK` para disparar una transición.
+ *   2. **Temporización de estado**: Para cada estado temporizado (OPEN, BLOCKED, etc.),
+ *      verifica si el tiempo transcurrido supera la duración y establece
+ *      `trig = TRIG_AUTH_OK` para disparar una transición. ENV_MONITOR
+ *      excepcionalmente usa `lightLevel < LIGHT_MIN` (luz baja) como condición
+ *      de salida en lugar de un timer fijo.
  *
- * 3. **Cálculo de sensores**: Calcula temperatura (Steinhart-Hart)
- *    y nivel de luz a partir de los datos de RunningAverage.
+ *   3. **Cálculo de sensores**: Calcula temperatura (Steinhart-Hart con inversión
+ *      del divisor de voltaje NTC, clamps de seguridad y sanity check a 25°C)
+ *      y nivel de luz a partir de los datos de RunningAverage (LDR invertido
+ *      para que mayor valor = más luz).
  *
  * 4. **Monitoreo específico de estado**:
  *    - ENV_MONITOR: verifica umbrales de temperatura y luz.
@@ -1330,7 +1372,9 @@ void processInput() {
  * 5. **Parpadeo LED**: Actualiza el LED rojo según el patrón de parpadeo activo
  *    (BLOCKED o ALARM).
  *
- * 6. **Actualización de LCD**: Llama a `updateDisplay()` cada LCD_INTERVAL.
+ *   6. **Debug serial**: Cada 500ms imprime T=, L=, MIC= y DOOR= por Serial.
+ *
+ *   7. **Actualización de LCD**: Llama a `updateDisplay()` cada LCD_INTERVAL.
  *
  * @note
  * Los eventos de puerta en ALARM usan detección por flanco (mediante `doorChanged`),
@@ -1360,7 +1404,7 @@ void updateState() {
         if (elapsed >= T_LOCKOUT) trig = TRIG_AUTH_OK;
         break;
       case S_ENV_MONITOR:
-        if (elapsed >= T_ENV_MONITOR) trig = TRIG_AUTH_OK;
+        if (lightLevel > 0 && lightLevel < LIGHT_MIN) trig = TRIG_AUTH_OK;
         break;
       case S_INTRUSION_MONITOR:
         if (elapsed >= T_INTRUSION) trig = TRIG_AUTH_OK;
@@ -1377,21 +1421,40 @@ void updateState() {
   // La temperatura se calcula a partir de los valores NTC promediados
   if (tempAvg.getCount() > 0) {
     float avgRaw = tempAvg.getAverage();
+    avgRaw = 1023.0f - avgRaw; // ← inversión del divisor de voltaje
     if (avgRaw <= 0) avgRaw = 1;
+    if (avgRaw >= 1023) avgRaw = 1022;
     float R2 = R1 * (1023.0f / avgRaw - 1.0f);
+    if (R2 <= 0) R2 = 1;
     float logR2 = log(R2);
     temperature = (1.0f / (C1 + C2 * logR2 + C3 * logR2 * logR2 * logR2)) - 273.15f;
+    if (temperature < -40 || temperature > 150) temperature = 25.0f;
   }
   if (lightAvg.getCount() > 0) {
     lightLevel = (int)lightAvg.getAverage();
   }
 
+  static unsigned long lastDebug = 0;
+  if (now - lastDebug >= 500)
+  {
+    lastDebug = now;
+    Serial.print(F("T="));
+    Serial.print(temperature, 1);
+    Serial.print(F("C L="));
+    Serial.print(lightLevel);
+    Serial.print(F(" MIC="));
+    Serial.print(micVal);
+    Serial.print(F(" DOOR="));
+    Serial.println(hallDoorOpen ? "OPEN" : "CLOSED");
+  }
+
   // --- Monitoreo específico de estado ---
   switch (currentState) {
     case S_ENV_MONITOR:
-      if ((temperature > 0 && temperature < TEMP_LOW) ||
-          temperature > TEMP_HIGH ||
-          (lightLevel > 0 && lightLevel < LIGHT_MIN)) {
+      if (trig == TRIG_NONE &&
+          ((temperature > 0 && temperature < TEMP_LOW) ||
+           temperature > TEMP_HIGH ||
+           (lightLevel > 900))) {
         trig = TRIG_ENV_ALARM;
         Serial.print(F("[ENV] Threshold: T="));
         Serial.print(temperature); Serial.print(F(" L=")); Serial.println(lightLevel);
@@ -1400,7 +1463,7 @@ void updateState() {
 
     case S_INTRUSION_MONITOR:
       // Estado de puerta actualizado por interrupción (hallDoorOpen), micrófono por sondeo
-      if (hallDoorOpen || micVal > SOUND_HIGH) {
+      if (trig == TRIG_NONE && (hallDoorOpen || micVal > SOUND_HIGH)) {
         trig = TRIG_INTRUSION;
         if (hallDoorOpen) {
           doorChanged = false;  // Consumir evento para que ALARM no lo cuente dos veces
@@ -1417,8 +1480,6 @@ void updateState() {
         Serial.println(F("[ALARM] Triple event! Extended alarm"));
         alarmCount = 0;
         stateEntryTime = now;  // Reiniciar timer = permanecer en alarma más tiempo
-      } else if (elapsed >= T_ALARM) {
-        trig = TRIG_AUTH_OK;
       }
       break;
 
@@ -1447,7 +1508,7 @@ void updateState() {
 /**
  * @brief Configura la máquina de estados finita.
  * @details
- * Registra todos los callbacks de entrada/salida de estado y establece las 10
+ * Registra todos los callbacks de entrada/salida de estado y establece las
  * transiciones entre los 6 estados. Las transiciones usan funciones lambda
  * que verifican la variable global `trig`.
  *
@@ -1455,10 +1516,12 @@ void updateState() {
  * @code{.txt}
  * S_IDLE --[TRIG_AUTH_OK]--> S_OPEN
  * S_IDLE --[TRIG_LOCKOUT]--> S_BLOCKED
+ * S_IDLE --[TRIG_ENV_ALARM]--> S_ENV_MONITOR     (tecla A debug)
+ * S_IDLE --[TRIG_INTRUSION]--> S_INTRUSION_MONITOR (tecla B debug)
  * S_OPEN --[timer]--> S_IDLE
  * S_BLOCKED --[timer]--> S_IDLE
- * S_ENV_MONITOR --[TRIG_ENV_ALARM]--> S_ALARM
- * S_ENV_MONITOR --[timer]--> S_IDLE
+ * S_ENV_MONITOR --[TRIG_ENV_ALARM]--> S_ALARM     (umbral temp/light)
+ * S_ENV_MONITOR --[luz baja]--> S_IDLE
  * S_INTRUSION_MONITOR --[TRIG_INTRUSION]--> S_ALARM
  * S_INTRUSION_MONITOR --[timer]--> S_IDLE
  * S_ALARM --[timer]--> S_INTRUSION_MONITOR
@@ -1468,6 +1531,8 @@ void updateState() {
  * `TRIG_AUTH_OK` se reutiliza como señal de "temporizador expirado" para los
  * estados temporizados, ya que la autenticación exitosa y la expiración del
  * temporizador son mutuamente excluyentes por estado.
+ * Las teclas A/B usan `TRIG_ENV_ALARM` / `TRIG_INTRUSION` desde S_IDLE, lo
+ * cual es seguro porque las transiciones se evalúan solo desde el estado actual.
  *
  * @see Trigger
  */
@@ -1494,6 +1559,10 @@ void setupFSM() {
 
   // 3 intentos fallidos
   fsm.AddTransition(S_IDLE, S_BLOCKED, []() { return trig == TRIG_LOCKOUT; });
+
+  // Teclas de debug: A = ENV_MONITOR, B = INTRUSION_MONITOR
+  fsm.AddTransition(S_IDLE, S_ENV_MONITOR, []() { return trig == TRIG_ENV_ALARM; });
+  fsm.AddTransition(S_IDLE, S_INTRUSION_MONITOR, []() { return trig == TRIG_INTRUSION; });
 
   // Estados temporizados: cualquier disparador no-evento significa tiempo expirado
   auto timedDone = []() { return trig == TRIG_AUTH_OK; };
@@ -1531,8 +1600,8 @@ void setupFSM() {
  * Se ejecuta cada `SENSOR_INTERVAL` ms, con reinicio automático.
  *
  * Sensores leídos:
- * - Termistor NTC (temperatura, A1)
- * - LDR (luz, A2)
+ * - Termistor NTC (temperatura, A1) — valor crudo ADC
+ * - LDR (luz, A2) — invertido (1023 - ADC) para que mayor valor = más luz
  * - Micrófono (sonido, A0)
  *
  * @note
@@ -1545,7 +1614,7 @@ void setupFSM() {
  */
 AsyncTask sensorTask(SENSOR_INTERVAL, true, []() {
   int ntc = analogRead(PIN_NTC);
-  int ldr = analogRead(PIN_LDR);
+  int ldr = 1023 - analogRead(PIN_LDR);   // ← invertir LDR para que mayor valor = más luz
   micVal  = analogRead(PIN_MIC);
 
   // Agregar a promedios móviles
