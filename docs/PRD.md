@@ -256,6 +256,7 @@ The system implements a **triple alarm** security mechanism to prevent alarm fat
 | Documented source code | Single-file C/C++ (~1690 lines) with Doxygen comments |
 | UML diagrams | Class diagram + 4 sequence diagrams (docs/UML/) |
 | Evidence video | [Demostración del sistema en hardware real](https://youtu.be/dy91o7FNlL0) |
+| Wokwi simulator | [Proyecto ejecutable en el navegador](https://wokwi.com/projects/464950260566905857) |
 | Written report | Document per instructor-provided format |
 
 ---
@@ -270,13 +271,23 @@ The system implements a **triple alarm** security mechanism to prevent alarm fat
 
 ---
 
-## Demo Video
+## Demos
+
+### Video — Hardware Real
 
 [![Evidencias del proyecto](https://img.youtube.com/vi/dy91o7FNlL0/0.jpg)](https://youtu.be/dy91o7FNlL0)
 
 **[Ver video de evidencias →](https://youtu.be/dy91o7FNlL0)**
 
 Demostración del sistema funcionando con hardware real: autenticación por PIN y RFID, bloqueo por intentos fallidos, monitoreo ambiental, detección de intrusión (puerta y micrófono), alarma triple, y cambio de PIN vía menú.
+
+### Simulador Wokwi
+
+[![Wokwi Simulator](https://img.shields.io/badge/Wokwi-Simulador-4CAF50?style=for-the-badge&logo=wokwi)](https://wokwi.com/projects/464950260566905857)
+
+**[Abrir proyecto en Wokwi →](https://wokwi.com/projects/464950260566905857)**
+
+Versión del proyecto ejecutable directamente en el navegador. Implementa la misma máquina de estados de 6 estados pero orientada a simulación, ideal para testing rápido y demostración sin hardware físico. Incluye todos los periféricos: teclado matricial, LCD 16x2, servo, sensores y alarmas.
 
 ---
 

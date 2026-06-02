@@ -401,13 +401,23 @@ Arduino-Project/
 
 ---
 
-## Demo Video
+## Demos
+
+### Video — Hardware Real
 
 [![Evidencias del proyecto](https://img.youtube.com/vi/dy91o7FNlL0/0.jpg)](https://youtu.be/dy91o7FNlL0)
 
 **[Ver video de evidencias →](https://youtu.be/dy91o7FNlL0)**
 
 Demostración del sistema funcionando con hardware real: autenticación por PIN, bloqueo por intentos fallidos, monitoreo de sensores, detección de intrusión por puerta y micrófono, alarma sonora y visual, y cambio de PIN vía menú.
+
+### Simulador Wokwi
+
+[![Wokwi Simulator](https://img.shields.io/badge/Wokwi-Simulador-4CAF50?style=for-the-badge&logo=wokwi)](https://wokwi.com/projects/464950260566905857)
+
+**[Abrir proyecto en Wokwi →](https://wokwi.com/projects/464950260566905857)**
+
+Versión del proyecto ejecutable directamente en el navegador. Implementa la misma máquina de estados de 6 estados pero orientada a simulación, ideal para testing rápido y demostración sin hardware físico. Incluye todos los periféricos: teclado matricial, LCD 16x2, servo, sensores y alarmas.
 
 ---
 
