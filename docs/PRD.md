@@ -32,7 +32,7 @@ The system is implemented on the **ATmega2560** microcontroller and organized as
 |---|---|---|
 | ATmega2560 | — | Main microcontroller |
 | Keypad 4x4 | Rows: D29,D31,D33,D35 / Cols: D37,D39,D41,D43 | Numeric entry + menu navigation |
-| Servo Motor | D10 (PWM) | Lock mechanism (0° locked, 90° unlocked) |
+| Servo Motor | D13 (PWM) | Lock mechanism (0° locked, 90° unlocked) |
 | Buzzer (Piezo) | D9 | Alarm tone via tone() — 1kHz square wave |
 | RGB LED | R=A3, G=A4, B=A5 | Status indicator (digital out on analog pins) |
 | LCD 16x2 | RS=12, EN=11, D4=5, D5=4, D6=3, D7=2 | Status display (parallel 4-bit mode) |
@@ -54,6 +54,7 @@ The system is implemented on the **ATmega2560** microcontroller and organized as
 - **Servo.h:** Servo motor control for the lock mechanism
 - **LiquidCrystal.h:** LCD 16x2 control (parallel 4-bit)
 - **Keypad 3.1.1:** Matrix keypad driver (4×4)
+- **MFRC522 1.4.12:** RFID card reader (SS=53, RST=49)
 
 ---
 
@@ -117,7 +118,7 @@ The system operates with **6 states** and **11 transitions**:
 ### 6.2 Password Policy
 
 - **Digits:** 4–6 digits per PIN.
-- **Expiration:** Each PIN expires after **4 uses**; the system forces the user to change it.
+- **Expiration:** Each PIN expires after **10 uses**; the system forces the user to change it.
 - **History:** 4 previous PINs stored in EEPROM (circular buffer). New PIN cannot match any previous PIN.
 - **Timeout:** PIN entry times out after 10 seconds of inactivity (buffer cleared).
 - **Change Menu:** Accessible from S_IDLE by pressing `#` with no digits entered → Old PIN → New PIN → Confirm.
@@ -252,8 +253,9 @@ The system implements a **triple alarm** security mechanism to prevent alarm fat
 | Deliverable | Description |
 |---|---|
 | Functional physical prototype | Assembled and operational hardware on ATmega2560 |
-| Documented source code | Single-file C/C++ (1727 lines) with Doxygen comments |
+| Documented source code | Single-file C/C++ (~1690 lines) with Doxygen comments |
 | UML diagrams | Class diagram + 4 sequence diagrams (docs/UML/) |
+| Evidence video | [Demostración del sistema en hardware real](https://youtu.be/dy91o7FNlL0) |
 | Written report | Document per instructor-provided format |
 
 ---
@@ -263,6 +265,18 @@ The system implements a **triple alarm** security mechanism to prevent alarm fat
 - Specific time windows per role (exact values to hardcode).
 - Potentiometer contrast adjustment for LCD.
 - Report format (pending delivery by instructor).
+
+---
+
+---
+
+## Demo Video
+
+[![Evidencias del proyecto](https://img.youtube.com/vi/dy91o7FNlL0/0.jpg)](https://youtu.be/dy91o7FNlL0)
+
+**[Ver video de evidencias →](https://youtu.be/dy91o7FNlL0)**
+
+Demostración del sistema funcionando con hardware real: autenticación por PIN y RFID, bloqueo por intentos fallidos, monitoreo ambiental, detección de intrusión (puerta y micrófono), alarma triple, y cambio de PIN vía menú.
 
 ---
 

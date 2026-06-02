@@ -18,10 +18,9 @@ participant "AsyncTask\nsensorTask\n(200ms)" as ASYNC #D4E6F1
 participant "StateMachine" as FSM #B3D9FF
 participant "RGB LED\nR=A3" as RGB #FADBD8
 participant "Buzzer\nD9" as BUZ #FADBD8
-participant "LCD 16x2" as LCD #D4E6F1
 
 == INTRUSION MONITOR - watching ==
-note right: State S_INTRUSION_MONITOR\nLED: blue\nLCD: "MONITOR SEC"\n"Door: CLOSED"\nalarmCount=0
+note right: State S_INTRUSION_MONITOR\nLED: blue\nLCD: "MONITOR SEC" / "Door: CLOSED"\nalarmCount=0
 
 REED -> ISR: **Door opens**\nPin goes HIGH (INPUT_PULLUP)
 note right: attachInterrupt(CHANGE)\nImmediate — no polling!
@@ -30,7 +29,7 @@ ISR -> REED: return
 
 SYS -> SYS: updateState()\ndoorChanged == true
 SYS -> SYS: hallDoorOpen = true
-note right: Edge consumed for\nINTRUSION_MONITOR
+note right: Detección por nivel:\nINTRUSION_MONITOR\n(ALARM usa flanco via doorChanged)
 SYS -> SYS: trig = TRIG_INTRUSION
 
 FSM -> SYS: Transition to S_ALARM
@@ -40,7 +39,7 @@ note right: Green+Blue turned OFF
 SYS -> BUZ: tone(1000) — 1kHz continuous
 SYS -> SYS: alarmCount++ (now = 1)
 SYS -> SYS: if alarmCount==1 → firstAlarmTime = now
-SYS -> LCD: "!!! ALARM !!!"\n"Event #1"
+note right: LCD NO se actualiza en ALARM\n(updateDisplay() no tiene case S_ALARM)
 
 == ALARM - countdown ==
 note right: T_ALARM = 2000ms
@@ -50,7 +49,7 @@ loop timer not expired
   note right: Buzzer always ON\nduring ALARM
 end
 
-FSM -> SYS: trig = TRIG_AUTH_OK (2s)
+FSM -> SYS: trig = TRIG_TIMER_DONE (2s)
 SYS -> SYS: onLeaveAlarm()
 SYS -> BUZ: noTone()
 SYS -> RGB: ledOff()
@@ -69,7 +68,7 @@ FSM -> SYS: Transition to S_ALARM
 SYS -> SYS: onEnterAlarm()\nalarmCount++ (now = 2)
 note right: alarmCount < 3\nnormal alarm cycle
 
-FSM -> SYS: trig = TRIG_AUTH_OK (2s)
+FSM -> SYS: trig = TRIG_TIMER_DONE (2s)
 FSM -> SYS: Transition to S_INTRUSION_MONITOR
 
 == Third intrusion: triple alarm fires ==
@@ -78,7 +77,6 @@ note right: 3rd event still within\nT_TRIPLE (12s from firstAlarmTime)
 REED -> ISR: **Door opens again (3rd time)**
 SYS -> SYS: onEnterAlarm()\nalarmCount++ (now = 3)
 SYS -> SYS: alarmCount >= 3 AND\n(now - firstAlarmTime) < T_TRIPLE?
-note right: TRIPLE ALARM!\nalarmCount=0\nstateEntryTime=now\n(extends alarm duration)
-SYS -> SYS: Buzzer stays ON\nLED continues fast blink\nExtra time added to T_ALARM
+note right: TRIPLE ALARM!\nalarmCount=0\nstateEntryTime=now\n(extends alarm duration)\nBuzzer stays ON\nLED continues fast blink
 
 @enduml

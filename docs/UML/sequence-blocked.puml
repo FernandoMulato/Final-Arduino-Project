@@ -1,7 +1,7 @@
 @startuml BlockedAttempts
 ' ====================================================================
 ' Sequence diagram - Block after 3 failed attempts (v4_main.ino)
-' PIN incorrect x3 -> BLOCKED 5s (LED 300/700ms + buzzer beep) -> IDLE
+' PIN incorrect x3 -> BLOCKED 5s (LED 300/700ms + buzzer sync) -> IDLE
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -35,22 +35,24 @@ SYS -> SYS: failCount >= 3
 SYS -> FSM: trig = TRIG_LOCKOUT
 FSM -> SYS: Transition to S_BLOCKED
 SYS -> SYS: onEnterBlocked()
-SYS -> BUZ: tone(1000) — 1kHz
-note right: 200ms beep\n(delay(200))
-SYS -> BUZ: noTone()
 SYS -> RGB: blink RED active (300/700ms)
-note right: Green+Blue turned OFF\nRed channel blinks\nStarts ON for immediate feedback
+note right: Green+Blue turned OFF\nRed channel starts ON\nfor immediate feedback
+SYS -> BUZ: tone(1000) — synchronized with LED
+note right: Buzzer toggles ON/OFF\nin sync with LED blink\n(managed by updateBlinkPattern())
 SYS -> LCD: "BLOCKED"\n"Wait 5s..."
 
 == BLOCKED - LED blink 5 seconds ==
 note right: T_LOCKOUT = 5000ms
 loop ~6 cycles of 300ms ON / 700ms OFF
   SYS -> RGB: ON (300ms)
+  SYS -> BUZ: tone(1000) (sincronizado)
   SYS -> RGB: OFF (700ms)
+  SYS -> BUZ: noTone() (sincronizado)
 end
 
-FSM -> SYS: trig = TRIG_AUTH_OK (5s expired)
+FSM -> SYS: trig = TRIG_TIMER_DONE (5s expired)
 SYS -> RGB: ledOff()
+SYS -> BUZ: noTone()
 FSM -> SYS: Transition to S_IDLE
 SYS -> SYS: onEnterIdle()
 note right: failCount = 0\npinBuf cleared\nSystem restored

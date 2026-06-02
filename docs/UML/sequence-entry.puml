@@ -2,7 +2,7 @@
 ' ====================================================================
 ' Sequence diagram - Successful PIN entry (v4_main.ino)
 ' Happy path: correct PIN + role -> OPEN 2s -> IDLE
-' Shows PIN expiration check after uses >= PIN_MAX_USES
+' Shows PIN expiration check after uses >= PIN_MAX_USES (10)
 ' ====================================================================
 
 skinparam backgroundColor white
@@ -14,7 +14,7 @@ participant "Keypad 4x4\nD29,D31,D33,D35\nD37,D39,D41,D43" as KPD #D4E6F1
 participant "System\n(loop)" as SYS #FFCCCC
 participant "EEPROM" as EEP #D4E6F1
 participant "StateMachine\n(11 transitions)" as FSM #B3D9FF
-participant "Servo\nD10" as SRV #FADBD8
+participant "Servo\nD13" as SRV #FADBD8
 participant "LCD 16x2\nRS=12 EN=11 D4-D7=5,4,3,2" as LCD #D4E6F1
 participant "RGB LED\nR=A3 G=A4 B=A5" as RGB #FADBD8
 
@@ -34,7 +34,7 @@ SYS -> EEP: findUserByPin("1234")
 EEP --> SYS: Found: user 0, role 2
 SYS -> SYS: lastAuthRole = 2, uses++
 note right: access GRANTED
-SYS -> SYS: uses >= PIN_MAX_USES(4)?\n→ pinChangeRequired=true\npinChangeUserIdx=0
+SYS -> SYS: uses >= PIN_MAX_USES(10)?\n→ pinChangeRequired=true\npinChangeUserIdx=0
 
 SYS -> FSM: trig = TRIG_AUTH_OK
 FSM -> SYS: Transition to S_OPEN
@@ -45,10 +45,10 @@ SYS -> LCD: "ACCESS GRANTED"\n"Operator 2s"
 
 == UNLOCKED - countdown ==
 loop each loop iteration
-  SYS -> SYS: updateState()\nelapsed >= 2000ms?
+  SYS -> SYS: updateState()\nelapsed >= T_UNLOCK(2000ms)?
 end
 
-FSM -> SYS: trig = TRIG_AUTH_OK (timer)
+FSM -> SYS: trig = TRIG_TIMER_DONE
 FSM -> SYS: Transition to S_IDLE
 SYS -> SRV: write(SRV_LOCKED) 0°
 SYS -> RGB: ledOff()
@@ -56,6 +56,6 @@ note right: System back to idle\npinChangeRequired persists\nfor next authentica
 
 == IDLE - cycle complete ==
 LCD -> SYS: "IDLE"\n"Enter PIN:"
-note right: Ready for next access\nIf PIN expired,\nuser must change via menu
+note right: Ready for next access\nIf PIN expired (10 uses),\nuser must change via menu
 
 @enduml

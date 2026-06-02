@@ -23,7 +23,7 @@ package "Data" as dataPkg #F0F0F0 {
   note right of User
     role: 1=Security, 2=Operator
     3=Coordinator, 4=Manager
-    uses: max 4 before PIN rotation
+    uses: max 10 before PIN rotation
     history: last 4 PINs (circular)
     PIN policy: 4-6 digits
     EEPROM = 10 users x 24 bytes
@@ -44,6 +44,7 @@ package "State Machine" as fsmPkg #F0F0F0 {
   enum Trigger #B3D9FF;line:Black {
     TRIG_NONE
     TRIG_AUTH_OK
+    TRIG_TIMER_DONE
     TRIG_LOCKOUT
     TRIG_ENV_ALARM
     TRIG_INTRUSION
@@ -59,8 +60,8 @@ package "State Machine" as fsmPkg #F0F0F0 {
   note right of StateMachine
     StateMachineLib v1.0.0
     6 states, 11 transitions
-    10 transitions use millis() timer
-    + 1 for auth/lockout events
+    5 transitions use TRIG_TIMER_DONE (millis)
+    6 use event triggers (auth, lockout, alarm, intrusion)
   end note
 }
 
@@ -96,6 +97,21 @@ package "Peripherals" as perifPkg #F0F0F0 {
       9999 (Security)
   end note
 
+  class MFRC522 #D4E6F1;line:Black {
+    {method} +PICC_IsNewCardPresent(): bool
+    {method} +PICC_ReadCardSerial(): bool
+    {method} +PICC_HaltA(): void
+    {method} +PCD_Init(): void
+  }
+  note right of MFRC522
+    RFID reader
+    SS=53, RST=49
+    2 authorized cards:
+      Card 1 → ROLE_MANAGER
+      Card 2 → ROLE_OPERATOR
+    Polled from IDLE via checkRFID()
+  end note
+
   class LiquidCrystal #D4E6F1;line:Black {
     {method} +begin(cols, rows): void
     {method} +print(text): void
@@ -107,7 +123,7 @@ package "Peripherals" as perifPkg #F0F0F0 {
     RS=12, EN=11, D4=5, D5=4
     D6=3, D7=2
     Messages: IDLE, ACCESS GRANTED,
-    BLOCKED, MONITOR, !!! ALARM !!!
+    BLOCKED, MONITOR ENV, MONITOR SEC
     PIN entry: **** #=ok
   end note
 
@@ -145,9 +161,8 @@ package "Sensors" as sensPkg #F0F0F0 {
   note right of SensorLDR
     Pin A2 — KY-018
     Averaged via RunningAverage (5)
-    Inverted: 1023-ADC so higher=more light
-    Threshold: ADC < 100 (dark) → IDLE
-    ADC > 900 (bright) → alarm
+    Inverted: higher ADC = more light
+    Threshold: <100 (dark) → IDLE via timer
   end note
 
   class SensorHall #D5F5E3;line:Black {
@@ -191,7 +206,7 @@ package "Actuators" as actPkg #F0F0F0 {
     {method} +write(angle): void
   }
   note right of Servo
-    Pin D10 (PWM)
+    Pin D13 (PWM)
     Locked: 0° (SRV_LOCKED)
     Unlocked: 90° (SRV_UNLOCKED)
     Duration: 2s (T_UNLOCK)
@@ -220,8 +235,9 @@ package "Actuators" as actPkg #F0F0F0 {
   note right of Buzzer
     Pin D9 — Piezo
     tone() — non-blocking square wave
-    1kHz during ALARM state
-    200ms beep on BLOCKED entry
+    1kHz continuous during ALARM
+    Synchronized with LED blink in BLOCKED
+    (tone/noTone toggles with LED)
   end note
 }
 
@@ -246,6 +262,12 @@ package "Controller" as sysPkg #F0F0F0 {
     {field} menuStep: uint8_t
     {field} menuBuf[7]: char
     {field} menuUserIdx: uint8_t
+    {field} menuConfirmTime: unsigned long
+    {field} menuConfirmPending: bool
+    {field} buzzerTimedOff: bool
+    {field} buzzerOffTime: unsigned long
+    {field} lastPageSwitch: unsigned long
+    {field} displayPage: bool
     ..
     {method} +setupFSM(): void
     {method} +processInput(): void
@@ -257,28 +279,31 @@ package "Controller" as sysPkg #F0F0F0 {
     {method} +pinIsUnique(idx, pin): bool
     {method} +rotatePin(idx, newPin): void
     {method} +addUser(pin, role): void
+    {method} +setUserCount(c): void
     {method} +initEEPROM(): void
     {method} +handlePinEntry(key): void
     {method} +handleMenuKey(key): void
     {method} +closeMenu(): void
+    {method} +checkRFID(): uint8_t
   }
   note bottom of System
     Single-file: src/main.ino (v4)
-    1727 lines, 0 external modules
+    1688 lines, 0 external modules
     StateMachineLib for FSM (real build)
     AsyncTaskLib for sensor timing (200ms)
     millis() for state timing + blink
     tone() for buzzer (non-blocking)
     F() macro for all PROGMEM strings
     Key features:
-    • 6-state FSM, 11 transitions
-    • PIN auth with history rotation
-    • Menu: PIN change (old→new→confirm)
-    • Triple alarm detection (3 in 12s)
-    • Debug keys A/B from IDLE
-    • PIN timeout after 10s idle
-    • PIN expiration after 4 uses
-    • Hall sensor ISR on D21 (INT2)
+    · 6-state FSM, 11 transitions
+    · PIN auth with history rotation
+    · Menu: PIN change (old→new→confirm)
+    · Triple alarm detection (3 in 12s)
+    · Debug keys A/B from IDLE
+    · PIN timeout after 10s idle
+    · PIN expiration after 10 uses
+    · Hall sensor ISR on D21 (INT2)
+    · RFID card auth (MFRC522)
   end note
 }
 
@@ -288,6 +313,7 @@ System --> Trigger : "fires"
 System --> StateMachine : "controls"
 System --> Keypad : "reads keys"
 System --> EEPROM : "persists data"
+System --> MFRC522 : "reads cards"
 System --> LiquidCrystal : "displays status"
 System --> AsyncTask : "schedules sensor reads"
 System --> SensorNTC : "reads temp (A1)"
@@ -295,7 +321,7 @@ System --> SensorLDR : "reads light (A2)"
 System --> SensorHall : "reads door (D21 INT2)"
 System --> Microphone : "reads sound (A0)"
 System --> RunningAverage : "smooths NTC+LDR"
-System --> Servo : "actuates lock (D10)"
+System --> Servo : "actuates lock (D13)"
 System --> RGB_LED : "status indicator (A3-A5)"
 System --> Buzzer : "sound alarm (D9)"
 System --> User : "manages"

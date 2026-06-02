@@ -20,13 +20,12 @@ conditions (temperature, light) with sensor averaging.
 |-----------|-------|
 | Microcontroller | ATmega2560 (Arduino Mega) |
 | Frequency | 16 MHz |
-| SRAM | 8 KB (790 B used — 9.6%) |
-| Flash | 248 KB (19.4 KB used — 7.6%) |
+| SRAM | 8 KB (846 B used — 10.3%) |
+| Flash | 248 KB (23 KB used — 9.1%) |
 | EEPROM | 4 KB |
 | Language | C++ (Arduino framework) |
-| Libraries | StateMachineLib, AsyncTaskLib, Keypad 3.1.1, Servo, LiquidCrystal, RunningAverage |
-| Files | 1 (`src/main.ino`, ~1770 lines) |
-| Build toggle | `SIMULATOR_BUILD` (manual FSM for simulators) |
+| Libraries | StateMachineLib, AsyncTaskLib, Keypad 3.1.1, Servo, LiquidCrystal, RunningAverage, MFRC522 |
+| Files | 1 (`src/main.ino`, ~1690 lines) |
 
 ---
 
@@ -56,7 +55,7 @@ state machine, peripherals, sensors, actuators, and the central controller.
 ## Finite State Machine (FSM)
 
 The FSM is the architectural core. It implements **6 states** with
-**9 transitions** using `StateMachineLib`.
+**11 transitions** using `StateMachineLib`.
 
 ### States
 
@@ -65,8 +64,8 @@ The FSM is the architectural core. It implements **6 states** with
 | 1 | `S_IDLE` | Idle. Waits for keypad input or menu trigger. | PIN timeout 10s |
 | 2 | `S_OPEN` | Valid PIN + role in window. Servo unlocked. | 2s |
 | 3 | `S_BLOCKED` | 3 failed attempts. Red LED 300/700ms. | 5s |
-| 4 | `S_INTRUSION_MONITOR` | Hall + mic monitoring. | 2s |
-| 5 | `S_ENV_MONITOR` | Temp + light monitoring (RunningAverage). | 4s |
+| 4 | `S_INTRUSION_MONITOR` | Hall + mic monitoring. | 10s |
+| 5 | `S_ENV_MONITOR` | Temp + light monitoring (RunningAverage). | 10s |
 | 6 | `S_ALARM` | Buzzer ON (`tone()` 1kHz). RGB red fast blink 100/500ms. | 2s + triple rearm (alarmCount) |
 
 ### Main Transitions
@@ -129,7 +128,7 @@ Hall or microphone trigger → ALARM (2s, buzzer + LED) → INTRUSION_MONITOR �
 
 | Block Sequence |
 |----------------|
-| ![BlockAttempts](docs/UML/BlockedAttempts.png) |
+| ![BlockedAttempts](docs/UML/BlockedAttempts.png) |
 
 **Flow:**
 1. Each wrong PIN increments `failCount`
@@ -162,19 +161,23 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 
 | Section | Lines | Content |
 |---------|-------|---------|
-| Header | 1-45 | Block comment, revision history, transition diagram |
-| Includes + Config | 47-100 | Libraries, `SIMULATOR_BUILD` toggle, pin assignments (v2: LCD on 2/3/4/5/11/12, RGB on 22/24/26, servo D10, buzzer D9, keypad D29-D43) |
-| Constants | 102-235 | Timing, thresholds, PIN policy, role enums, EEPROM layout, Steinhart-Hart coefficients |
-| EEPROM Functions | 237-330 | `initEEPROM()`, `loadUser()`, `saveUser()`, `addUser()` |
-| Access Validation | 332-490 | `findUserByPin()`, `pinIsUnique()`, `rotatePin()`, `validateAccess()` with role/time check |
-| Actuator Helpers | 492-575 | `setRGB()`, `ledOff()`, `ledRed()`, `ledGreen()`, `ledBlue()`, `setBuzzer()` (via `tone()`), `unlockDoor()`, `lockDoor()` |
-| Display | 577-825 | `updateDisplay()` — per-state LCD formatting with role name in OPEN, event count in ALARM, door status in intrusion |
-| FSM Callbacks | 827-985 | `onEnterIdle()` to `onLeaveAlarm()` — 12 handlers (enter/leave × 6 states) |
-| Input | 987-1170 | `handleMenuKey()`, `handlePinEntry()`, `processInput()` — PIN entry, menu flow, `closeMenu()`, SIMULATOR test keys A/B |
-| State Update | 1172-1490 | `updateState()` — interrupt flag processing, state timing, sensor monitoring, `updateBlinkPattern()`, LCD refresh |
-| FSM Setup | 1492-1590 | `setupFSM()` — all transitions registered |
-| Sensors | 1592-1710 | `readSensors()`, `readNTC()`, `readLDR()`, `readMicrophone()` — AsyncTask-driven at 200ms, RunningAverage (5 samples) |
-| setup() + loop() | 1712-1770 | Init: pins, servo, LCD, EEPROM, tasks, `attachInterrupt`, FSM. Loop: `processInput()` → `updateState()` → `sensorTask.Update()` → `fsm.Update()` |
+| Header | 1-47 | Block comment, rev history, transition diagram, pin map |
+| Includes + Pin Defs | 49-133 | Libraries, all pin assignments (keypad, servo D13, RGB A3-A5, LCD D2/D3/D4/D5/D11/D12, RFID D53/D49) |
+| Constants | 134-275 | Timing, thresholds, PIN policy, EEPROM layout, Steinhart-Hart coefficients |
+| Enums + Globals | 276-504 | Role/state enums, user struct, EEPROM users array, blink patterns |
+| RFID Setup | 326-342 | MFRC522 instantiation (SS=53, RST=49) |
+| ISRs | 505-527 | `readDoorSensor()` — INT2 interrupt handler for reed switch |
+| Forward Decls | 528-552 | All function prototypes |
+| EEPROM Functions | 553-675 | `initEEPROM()`, `loadUser()`, `saveUser()`, `addUser()` |
+| Access Validation | 676-823 | `findUserByPin()`, `pinIsUnique()`, `rotatePin()`, `validateAccess()` with role/time check |
+| Actuator Helpers | 824-894 | `setRGB()`, `ledOff()`, `ledRed()`, `ledGreen()`, `ledBlue()`, `setBuzzer()` (tone), `unlockDoor()`, `lockDoor()` |
+| Display (LCD) | 895-1029 | `updateLCD()` — per-state formatting with role names, event count, door status |
+| FSM Handlers | 1030-1204 | `onEnterIdle()` to `onLeaveAlarm()` — all enter/leave callbacks for 6 states |
+| Keypad Input | 1205-1409 | `handleMenuKey()`, `handlePinEntry()`, `processInput()` — PIN entry, menu flow, RFID card read |
+| State Update | 1410-1561 | `updateState()` — interrupt flags, blink patterns, sensor monitoring, LCD refresh |
+| FSM Setup | 1562-1637 | `setupFSM()` — all state transitions registered |
+| AsyncTask Setup | 1638-1665 | `sensorTask` at 200ms interval |
+| Init + Loop | 1666-1753 | `setup()`: pins, servo, LCD, EEPROM, RFID, tasks, interrupts, FSM. `loop()`: `processInput()` → `updateState()` → `sensorTask.Update()` → `fsm.Update()` |
 
 ---
 
@@ -184,11 +187,13 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 |-----|----------|------|-------|
 | D29, D31, D33, D35 | Keypad Rows (4x4) | INPUT_PULLUP | Matrix rows |
 | D37, D39, D41, D43 | Keypad Columns | INPUT | Matrix columns |
-| D10 | SERVO | OUTPUT | PWM, door lock (0°/90°) |
+| D13 | SERVO | OUTPUT | PWM, door lock (0°/90°) |
 | D9 | BUZZER | OUTPUT | Piezo via `tone()`, non-blocking |
-| D22 | RGB_LED_R | OUTPUT | Red channel — alarm/block blink |
-| D24 | RGB_LED_G | OUTPUT | Green channel — access granted |
-| D26 | RGB_LED_B | OUTPUT | Blue channel — monitor mode |
+| A3 | RGB_LED_R | OUTPUT | Red channel — alarm/block blink |
+| A4 | RGB_LED_G | OUTPUT | Green channel — access granted |
+| A5 | RGB_LED_B | OUTPUT | Blue channel — monitor mode |
+| D53 | RFID_SS | OUTPUT | MFRC522 SPI slave select |
+| D49 | RFID_RST | OUTPUT | MFRC522 reset |
 | D12 | LCD_RS | OUTPUT | LCD register select |
 | D11 | LCD_EN | OUTPUT | LCD enable |
 | D5, D4, D3, D2 | LCD_D4-D7 | OUTPUT | LCD data lines (4-bit) |
@@ -231,7 +236,7 @@ From IDLE, press `#` with no digits → menu → change PIN with history check.
 [PIN 4B][role 1B][uses 1B][active 1B][histIdx 1B][history 16B]
 ```
 - `role`: 1=Security, 2=Operator, 3=Coordinator, 4=Manager
-- `uses`: counter, max 4 before PIN rotation
+- `uses`: counter, max 10 before PIN rotation
 - `histIdx`: current index in circular history buffer
 - `history`: 4 previous PINs (4 bytes each)
 
@@ -287,7 +292,7 @@ Temperature and light use `RunningAverage` library (5 samples) for smoothing.
 ### PIN Rotation Policy
 
 Each user has a `uses` counter incremented on each successful entry.
-When uses reaches 4:
+When uses reaches 10:
 1. Access is still granted for the 4th use
 2. `pinChangeRequired` flag is set
 3. The next authentication attempt with the same PIN is rejected
@@ -325,6 +330,7 @@ Time windows are hardcoded as `constexpr` tables. With an RTC module,
 | RunningAverage | 0.4.9 | robtillaart | Analog sensor smoothing |
 | Servo | 1.3.0 | arduino-libraries | Servo motor lock control |
 | LiquidCrystal | 1.0.7 | arduino-libraries | 16x2 LCD display |
+| MFRC522 | 1.4.12 | miguelbalboa | RFID card reader |
 | EEPROM | built-in | Arduino | Persistent storage |
 
 ---
@@ -343,18 +349,19 @@ scripts/build.sh full        # clean + deps + build
 scripts/build.sh -v build    # Verbose
 ```
 
-### Simulator Build Toggle
+### Debug Key Transitions
 
-Set `#define SIMULATOR_BUILD 1` at line 55 of `src/main.ino` for simulator
-compatibility (Wokwi, Tinkercad). This replaces `StateMachineLib` with a manual
-switch/case FSM and enables test keys `A`/`B` for direct state transitions.
-The toggle is **off by default** (`#define SIMULATOR_BUILD 0`) for the
-physical Arduino Mega prototype.
+From `S_IDLE`, the following test keys are available for manual state transitions:
+
+| Key | Action |
+|-----|--------|
+| `A` | Force transition to `S_ENV_MONITOR` (debug) |
+| `B` | Force transition to `S_INTRUSION_MONITOR` (debug) |
 
 **Memory usage (Arduino Mega):**
 ```
-RAM:    790 bytes (9.6%) of 8192
-Flash:  19378 bytes (7.6%) of 253952
+RAM:    846 bytes (10.3%) of 8192
+Flash:  23048 bytes (9.1%) of 253952
 ```
 
 ---
@@ -364,8 +371,7 @@ Flash:  19378 bytes (7.6%) of 253952
 ```
 Arduino-Project/
 ├── src/
-│   ├── main.ino              # Full implementation (~1770 lines)
-│   └── v2_without_fsm_main.ino.txt  # Simulator-tested baseline (reference)
+│   ├── main.ino              # Full implementation (~1690 lines)
 ├── lib/
 │   └── StateMachineLib/       # Local FSM library
 ├── spec/
@@ -390,6 +396,18 @@ Arduino-Project/
 ├── platformio.ini             # PlatformIO config
 └── README.md                  # This file
 ```
+
+---
+
+---
+
+## Demo Video
+
+[![Evidencias del proyecto](https://img.youtube.com/vi/dy91o7FNlL0/0.jpg)](https://youtu.be/dy91o7FNlL0)
+
+**[Ver video de evidencias →](https://youtu.be/dy91o7FNlL0)**
+
+Demostración del sistema funcionando con hardware real: autenticación por PIN, bloqueo por intentos fallidos, monitoreo de sensores, detección de intrusión por puerta y micrófono, alarma sonora y visual, y cambio de PIN vía menú.
 
 ---
 

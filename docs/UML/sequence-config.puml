@@ -52,12 +52,12 @@ SYS -> EEP: rotatePin(2, "5678")
 note right: saveUser(userIdx, newPin,\nrole, uses=0, histIdx+1,\noldPin pushed to history[histIdx])
 SYS -> SYS: if pinChangeRequired AND\npinChangeUserIdx == menuUserIdx:\npinChangeRequired = false
 SYS -> LCD: "PIN changed!"\n"OK"
-note right: Confirmation shown\nfor 1.5 seconds (delay(1500))
+note right: Confirmation shown for 1.5s\n(non-blocking millis() via\nmenuConfirmTime + menuConfirmPending)
 SYS -> SYS: closeMenu()
 note right: Resets menu flags\nClears all buffers
 
 == Alternative: PIN expired forced change ==
-note right: If uses >= PIN_MAX_USES(4)\nprevious access set pinChangeRequired
+note right: If uses >= PIN_MAX_USES(10)\nprevious access set pinChangeRequired
 USR -> KPD: Enters old PIN + '#'
 KPD -> SYS: getKey() = digits + #
 SYS -> EEP: findUserByPin(pinBuf)
